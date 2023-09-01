@@ -9,6 +9,16 @@
 #include <stdlib.h>
 #include <assert.h>
 
+#error This wont compile with a normal compiler! Read the warning Below this #error.
+// 
+// WARNING: This currently only compiles using an unreleased version of my 
+//          own c-compiler. When I want to release this:
+//          
+//             1) All fancy 'pbc_print' calls need to be changed to normal printf.
+//             2) All local functions need to be put into global scope and duplicate names changed.
+//             3) Some global symbols will need to be reordered because c only compiles linearly.
+// 
+
 __declspec(printlike) int pbc_print(char *format, ...){
     va_list va;
     va_start(va, format);
