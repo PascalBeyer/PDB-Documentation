@@ -137,9 +137,9 @@ All other (allocated) pages are assigned to be part of so-called _streams_.
 This assignment is realized using a special stream called the _stream table stream_, which can be found from the information stored in the header.
 
 The motivation for this format is to provide a way to append, read and write these stream, without changing the original data.
-This is realized by allocating a new directory stream (allowing for copy on write access) and using the _other_ Free Page Map.
+This is realized by allocating a new stream table stream (allowing for copy on write access) and using the _other_ Free Page Map.
 Now, if at any point we notice an error, we can just _forget_ we ever did anything. Else, at _commit_ time, the 
-directory streams and the Free Page Map are atomically swapped.
+stream table streams and the Free Page Map are atomically swapped.
 
 ## MSF file header
 
@@ -206,7 +206,7 @@ The layout of the stream table stream is as follows:
              ...
 ```
 Importantly, streams can be marked as being _deleted_ in which case their stream size is `0xffffffff` (or -1 as a signed integer).
-For example, one might encounter this directory stream:
+For example, one might encounter this stream table stream:
 
 ```c
 amount_of_streams  = 4;
@@ -228,7 +228,7 @@ As the name implies, this stream contains an old (unused) stream table stream.
 This is because, when committing changes and thus changing the stream table stream, the old stream table stream 
 still needs to be valid, and thus allocated in the Free Page Map. 
 To avoid having pages allocated in the Free Page Map, but not assigned to any stream, during commit the old (still active) 
-directory stream is written old stream table stream.
+stream table stream is written old stream table stream.
 
 # PDB-Format
 
@@ -370,7 +370,7 @@ It will become important later (in a different hash table), that the modulus is 
 The string hash [`hashSz`](https://github.com/microsoft/microsoft-pdb/blob/082c5290e5aff028ae84e43affa8be717aa7af73/PDB/include/misc.h#L86) is now:
 ```c
 u16 hash_string(char *string){
-    return pdb_string_hash(string, strlen(string), (u32)-1);
+    return pdb_hash_index(string, strlen(string), (u32)-1);
 }
 ```
 A modulus of `-1` does not change the value. Afterward, the index is computed as a modulus of the `hash` and the `capacity`, i.e
@@ -424,7 +424,7 @@ It has the following layout:
 ```c
     u32 signature;
     u32 hash_version;
-    u32 string_buffer_byte_size;
+    u32 string_buffer_size;
     u8  string_buffer[string_buffer_size];
     u32 bucket_count;
     u32 buckets[bucket_count];
@@ -441,7 +441,7 @@ two different string hash functions are defined `LHashPbCb` and `LHashPbCbV2` an
 `verLongHash = 1`, and `verLongHashV2 = 2`. In practice only `verLongHash` is observed.
 The `LHashPbCb` is a version of `pdb_hash_index` which returns a u32 instead of truncating to a u16.
 
-* `string_buffer_byte_size`, `string_buffer`
+* `string_buffer_size`, `string_buffer`
 
 The buffer holding the actual zero-terminated strings. The first string inside the string buffer always has to be the zero-sized string, 
 as a zero offset is also used as an invalid offset in the hash table.
@@ -454,7 +454,7 @@ This hash table uses the hash function specified by `hash_version` and linear pr
 
 * `amount_of_strings`
 
-The amount of strings in the string buffer. Also corresponds to the amount of set entries in the hash table.
+The amount of strings in the string buffer, not counting the zero-sized string. Also corresponds to the amount of set entries in the hash table.
 
 ## TPI Stream
 
@@ -468,14 +468,14 @@ struct tpi_stream_header{
     u32 one_past_last_type_index;
     u32 byte_count_of_type_record_data_following_the_header;
     
-    u16 hash_stream_index;
-    u16 auxiliary_hash_stream_index;
+    u16 stream_index_of_hash_stream;
+    u16 stream_index_of_auxiliary_hash_stream;
     
     u32 hash_key_size;
     u32 number_of_hash_buckets;
     
-    u32 hash_value_buffer_offset;
-    u32 hash_value_buffer_length;
+    u32 hash_table_index_buffer_offset;
+    u32 hash_table_index_buffer_length;
     
     u32 index_offset_buffer_offset;
     u32 index_offset_buffer_length;
@@ -490,7 +490,7 @@ The current `version` is `20040203`.
 
 * `header_size`
 
-The size of the header, should be `sizeof(struct index_stream_header)`. 
+The size of the header, should be `sizeof(struct tpi_stream_header)`. 
 Specifying the size of a header is a common versioning scheme in Windows.
 
 * `minimal_type_index`
@@ -516,7 +516,7 @@ Here, the `length` field itself is not included in the length, hence iterating a
 struct tpi_stream_header *tpi = (void *)tpi_base;
 u32 type_index = tpi->minimal_type_index;
 for(u32 offset = 0; offset < tpi->byte_count_of_type_record_data_following_the_header; ){
-    struct codevice_type_record_header *header = (void *)(tpi_base + tpi->header_size + offset);
+    struct codeview_type_record_header *header = (void *)(tpi_base + tpi->header_size + offset);
     
     printf("type_index %x, kind %x, length %x\n", type_index++, header->kind, header->length);
     
@@ -547,7 +547,7 @@ would be:
 Printout produced by the [cvdump utility included in the microsoft-pdb repository](https://github.com/microsoft/microsoft-pdb/tree/master/cvdump).
 
 Importantly, a type record can only refer (by type index) to earlier type records. This means that types which are self referential, e.g.:
-```
+```c
 struct structure{
     struct structure *next;
 };
@@ -593,6 +593,9 @@ These values describe information inside the `TPI hash stream` used to recreate 
 This table is used to deduplicate type records during (incremental) linking and (because of the choice of hash function) to look up type records by name.
 
 The `hash_key_size` can be `2` or `4` but in practice is always `4`.
+Depending on the `hash_key_size` the `number_of_hash_buckets` is bounded to a specific range.
+For `hash_key_size == 4` the `number_of_hash_buckets` has to be in the range of `0x1000` and `0x40000`
+
 The `hash_table_index_buffer` contains a _hash table index_ for each type record. 
 Each of these indices has `hash_key_size`.
 This means one should have `hash_table_index_buffer_length = hash_key_size * (one_past_last_type_index - minimal_type_index)`.
@@ -609,7 +612,7 @@ struct hash_bucket{
 
 u32 *hash_indices = (u32 *)(tpi_hash_stream_base + tpi->hash_table_index_buffer_offset);
 for(u32 type_index = tpi->minimal_type_index; type_index < tpi->one_past_last_type_index; type_index++){
-    u32 hash_index = hash_indicies[type_index - tpi->minimal_type_index];
+    u32 hash_index = hash_indices[type_index - tpi->minimal_type_index];
     
     assert(hash_index < tpi->number_of_hash_buckets); // The indices are stored, not the hashes.
     
@@ -628,7 +631,7 @@ For `LF_UDT_SRC_LINE` and `LF_UDT_MOD_SRC_LINE` the hash is the `pdb_string_hash
 For all other type records the hash is a CRC32 over the entire type record.
 
 
-* `index_offset_buffer_offset`, `index_offset_buffer_size`
+* `index_offset_buffer_offset`, `index_offset_buffer_length`
 
 The _index offset buffer_ is an arrays of `struct { u32 type_index; u32 offset_in_tpi; }` located inside the tpi hash stream.
 These entries are intended to speed up searching for type records by type index. 
@@ -675,14 +678,14 @@ struct dbi_stream_header{
     u32 age;
     u16 stream_index_of_the_global_symbol_index_stream;
     struct{
-        u16 major_version : 8;
-        u16 minor_version : 7;
+        u16 minor_version : 8;
+        u16 major_version : 7;
         u16 is_new_version_format : 1;
     } toolchain_version;
     u16 stream_index_of_the_public_symbol_index_stream;
     u16 version_number_of_mspdb_dll_which_build_the_pdb;
     u16 stream_index_of_the_symbol_record_stream;
-    u16 version_number_of_mspdb_dll_which_rebuild_the_pdb;
+    u16 build_number_of_mspdb_dll_which_build_the_pdb;
     
     u32 byte_size_of_the_module_information_substream;   // substream 0
     u32 byte_size_of_the_section_contribution_substream; // substream 1
@@ -690,7 +693,7 @@ struct dbi_stream_header{
     u32 byte_size_of_the_source_information_substream;   // substream 3
     u32 byte_size_of_the_type_server_map_substream;      // substream 4
     
-    u32 offset_of_the_MFC_type_server_in_type_server_map_substream;
+    u32 index_of_the_MFC_type_server_in_type_server_map_substream;
     
     u32 byte_size_of_the_optional_debug_header_substream; // substream 6
     u32 byte_size_of_the_edit_and_continue_substream;     // substream 5
@@ -723,23 +726,23 @@ The age of the DBI stream gets set to the age of the PDB whenever the DBI stream
 For these streams see later sections. These stream indices can technically be `-1` meaning they are not present, but they seem to be always present.
 
 * `toolchain_version`
+* `version_number_of_mspdb_dll_which_build_the_pdb`, `build_number_of_mspdb_dll_which_build_the_pdb`
 
-// @note: maybe warning that this is used.
-// @cleanup: 
-
-* `version_number_of_mspdb_dll_which_build_the_pdb`, `version_number_of_mspdb_dll_which_rebuild_the_pdb`
+// @note: maybe warning that this is used. @cleanup: what do I mean by this? I think I read that in a clang comment?
 
 The version number of the `mspdbXXX.dll`, which build/rebuild this PDB last. `XXX` can be `core`, `st` or `140`.
-// @cleanup: rebuild
+These four version numbers together make up the `product version`, which can be seen in the properties dialog for `mspdbXXX.dll`.
+Looks something like: `14.29.30151.0`
 
 * `byte_size_of_the_*_substream`
 
 Immediately following the header, there are a variety of substreams one after the other.
 For information on them see their respective subsection. Notice the non-linear order and the offset member in the middle.
 
-* `offset_of_the_MFC_type_server_in_type_server_map_substream` 
+* `index_of_the_MFC_type_server_in_type_server_map_substream` 
 
 The released version of `mspdbcore.dll` does not define the `PDB_TYPESERVER` hence this value and the `byte_size_of_the_type_server_map_substream` are always zero.
+The MFC presumably stands for "Microsoft Foundation Class" see [here](https://learn.microsoft.com/en-us/cpp/mfc/mfc-desktop-applications?view=msvc-170).
 
 * `flags`
 
@@ -764,7 +767,7 @@ Each module structure has the following layout:
 ```c
 struct pdb_module_information{
     u32 unused;
-    struct pdb_section_contribution first_section_contribution;
+    struct pdb_section_contribution first_code_contribution;
     
     struct{
         u16 was_written : 1;
@@ -794,10 +797,10 @@ struct pdb_module_information{
 Both of these were 32-bit pointers, which were written out for convenience. If the PDB was produced by a 64-bit version of 
 `mspdbcore.dll` these members are `NULL`, but otherwise also unused.
 
-* `first_section_contribution`
+* `first_code_contribution`
 
-A copy of the first entry in the Section Contribution Substream (see below) for this module. 
-If this module does not contribute to the executable this entry can be the _invalid section contribution_, which 
+A copy of the first entry in the Section Contribution Substream (see below) for this module which has the 'IMAGE_SCN_CNT_CODE' characteristic set. 
+If this module does not contribute to the code of the executable this entry can be the _invalid section contribution_, which 
 has `section_id`, `size` and `module_index` of `-1` and everything else `0` (see below for the definition of `pdb_section_contribution`).
 
 * `flags`
@@ -917,7 +920,8 @@ struct pdb_section_map_entry{
     u32 section_size;
 };
 ```
-This table seems to be related to some older debugging format. In practice this table always seems to look as follows:
+This table seems to be related to some older object format (Object Module Format used by DOS and 16-bit Windows). 
+In practice this table always seems to look as follows:
 ```
 Sec  flags  ovl   grp   frm sname cname    offset    cbSeg
  01  010f  0000  0000  0001  ffff  ffff  00000000 00037864
@@ -932,7 +936,7 @@ Sec  flags  ovl   grp   frm sname cname    offset    cbSeg
  0a  0208  0000  0000  0000  ffff  ffff  00000000 ffffffff
 ```
 (This was dumped using the `cvdump` utillity).
-Notice that for each section the `cbSeg` or `section_size` is the size of the corresponding section.
+Notice that for each section the `cbSeg` or `section_size` is the virtual size of the corresponding section.
 According to llvm the flags can be derived from the following enum:
 ```c++
 enum class SectionMapEntryFlags : uint16_t {
@@ -1044,8 +1048,9 @@ All other stream indices can be `(u16)-1` which indicates that they are not pres
 The section header dump stream contains a copy of the section headers inside the executable.
 These section headers can be used to translate from `section_id:offset` addressing usually used in the PDB 
 to relative virtual addresses, which are more useful during debugging.
-Microsoft symbol server PDBs often also contain a pdata stream, which contains a copy of the `.pdata` section of 
-the executable.
+Microsoft symbol server PDBs often also contain a `.pdata` and `.xdata` stream, which contain copies of the `.pdata` and `.xdata` section of 
+the executable and can be used for function unwinding in situations where the respective sections are corrupted or not present 
+(for example in a kernel debugger context, these sections might be mapped out).
 
 The following are the contents of all optional streams (if they are present):
 
@@ -1057,6 +1062,7 @@ These are used for frame pointer omission on 32-bit x86 systems.
 * `exception_data`
 
 This is an array of [`IMAGE_FUNCTION_ENTRY`](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-image_function_entry).
+This stream is deprecated in favor of the `pdata` stream, which has a header.
 
 * `fixup_data`
 
@@ -1088,6 +1094,23 @@ This is an array of `u32`. This has something to do with `.NET`.
 
 A copy of the `.pdata` and .xdata` sections of the executable.
 These are present when specifying [/DEBUGTYPE:PDATA](https://learn.microsoft.com/en-us/cpp/build/reference/debugtype-debug-info-options?view=msvc-170#arguments).
+
+Both of these streams have the following header before the actual section data:
+
+```
+typedef struct DbgRvaVaBlob {
+    ULONG       ver;
+    ULONG       cbHdr;
+    ULONG       cbData;
+    ULONG       rvaDataBase;
+    DWORDLONG   vaImageBase;
+    ULONG       ulReserved1;    // reserved, must be 0
+    ULONG       ulReserved2;    // reserved, must be 0
+    //BYTE      rgbDataBlob[];  // Data follows, but to enable simple embedding,
+                                // don't use a zero-sized array here.
+} DbgRvaVaBlob;
+```
+see [here](https://github.com/microsoft/microsoft-pdb/blob/805655a28bd8198004be2ac27e6e0290121a5e89/langapi/include/pdb.h#L479).
 
 * `new_fpo_data`
 
@@ -1247,16 +1270,20 @@ The other is contained in the module symbol stream of the module which declares 
 The code which produces the symbol records can be found [here](https://github.com/microsoft/microsoft-pdb/blob/0fe89a942f9a0f8e061213313e438884f4c9b876/PDB/dbi/mod.cpp#L2587).
 In cvinfo.h the symbol `S_DATAREF` is also defined, but seems to be unused at this point.
 
+*WARNING:* These reference symbols (`S_PROCREF`, `S_LPROCREF`, `S_ANNOTATIONREF`) use a one-based module index, instead of zero-based.
+
 ## Global Symbol Index Stream (GSI)
 
 The _global symbol index_  or _GSI_ stream contains information to reconstruct a hash table which maps names to _hash records_.
 ```c
 struct pdb_hash_record{
-    u32 offset_in_symbol_record_stream;
+    u32 offset_in_symbol_record_stream_plus_one;
     u32 reference_counter;
 };
 ```
 Every _hash record_ references a symbol in the symbol record stream, as well as how many modules (compilation units) reference the symbol.
+**WARNING:** These symbol offsets incremented by one.
+
 
 The hash table has a fixed amount of buckets and uses [chaining]((https://en.wikipedia.org/wiki/Hash_table#Separate_chaining)) to resolve collisions. 
 The bucket count of the hash table is `0x3ffff` if the `/DEBUG:FASTLINK` option was used and `4096` otherwise.
@@ -1300,7 +1327,7 @@ The current version of the GSI stream is `0xeffe0000 + 19990810`.
 
 * `hash_records_byte_size`
  
-The (unadjusted) byte size of the `hash_records` array.
+The on disk byte size of the `hash_records` array.
  
 * `bucket_information_byte_size`
 
@@ -1880,7 +1907,7 @@ enum LEAF_ENUM_e{
 These new type records are of the form:
 ```c
 struct lfClass2 {
-    unsigned short  leaf;           // LF_CLASS2, LF_STRUCT2, LF_INTERFACE2
+    unsigned short  leaf;           // LF_CLASS2, LF_STRUCTURE2, LF_INTERFACE2
     CV_prop32_t     property;       // property attribute field (prop_t)
     CV_typ_t        field;          // type index of LF_FIELD descriptor list
     CV_typ_t        derived;        // type index of derived from list if not zero
@@ -2045,6 +2072,16 @@ S_GDATA32  - One for each global with external storage class.
 S_LDATA32  - One for each global with static storage class.
 ```
 This is obviously just a random sample and there might be many more symbols and types which may be interesting based on the use case.
+
+// @cleanup: warn S_COMPILE3 machine (and maybe toolchain) used.
+
+#### Relocations
+
+Because the `.debug$S` and `.debug$T` sections are contained in object files, which still have to be linked,
+they cannot know the location of symbols they refer to. Therefore, there are relocations, that have to be applied.
+There are two specially designed relocation types for debug info, namely `IMAGE_REL_AMD64_SECTION` and `IMAGE_REL_AMD64_SECREL`.
+
+#### `LF_TYPESERVER2`
 
 One final note is on the [`/Zi` compiler option](https://learn.microsoft.com/en-us/cpp/build/reference/z7-zi-zi-debug-information-format?view=msvc-170#zi). When using this option MSVC will split the `.debug$T` into a PDB.
 This PDB, usually named `vc140.pdb` is a _Type Server PDB_ (see below). In this case the only entry inside the 
