@@ -25,10 +25,10 @@ enum pdb_stream{
     
     PDB_STREAM_names,
     
-    PDB_CURRENT_AMOUNT_OF_STREAMS, // @incomplete:
-    
     PDB_STREAM_tpi_hash,
     PDB_STREAM_ipi_hash,
+    
+    PDB_CURRENT_AMOUNT_OF_STREAMS, // @incomplete:
     
     PDB_STREAM_section_header_dump,
     
@@ -40,7 +40,7 @@ enum pdb_stream{
 };
 
 // For reference see `HashPbCb` in `microsoft-pdb/PDB/include/misc.h`.
-u16 pdb_hash_index(u8 *bytes, size_t size, u32 modulus){
+u32 pdb_hash_index(u8 *bytes, size_t size, u32 modulus){
     u32 hash = 0;
     
     // Xor the bytes by dword lanes.
@@ -60,13 +60,359 @@ u16 pdb_hash_index(u8 *bytes, size_t size, u32 modulus){
     hash ^= (hash >> 16);
     
     // Take the modulus and return the hash.
-    return (u16)(hash % modulus);
+    return (hash % modulus);
 }
 
 u16 hash_string(char *string){
-    return pdb_hash_index((u8 *)string, strlen(string), (u32)-1);
+    return (u16)pdb_hash_index((u8 *)string, strlen(string), (u32)-1);
 }
 
+// returns -1 on failiure.
+void pdb_stream_skip_numeric_leaf(struct stream *stream){
+    
+    u16 numeric_leaf;
+    if(stream_read(stream, &numeric_leaf, sizeof(numeric_leaf))) return;
+    
+    if(!(numeric_leaf & 0x8000))return;
+    
+    //
+    // @cleanup: implement this more correctly
+    //
+    
+    switch(numeric_leaf){
+        case 0x8000:{ // LF_CHAR
+            stream_skip(stream, 1);
+        }break;
+        case 0x8001:  // LF_SHORT
+        case 0x8002:{ // LF_USHORT
+            stream_skip(stream, 2);
+        }break;
+        case 0x8005: // LF_REAL32
+        case 0x8003: // LF_LONG
+        case 0x8004:{ // LF_ULONG
+            stream_skip(stream, 4);
+        }break;
+        
+        case 0x8009: // LF_QUADWORD
+        case 0x800a: // LF_UQUADWORD
+        case 0x8006:{ // LF_REAL64
+            stream_skip(stream, 8);
+        }break;
+        
+        case 0x8008: // LF_REAL128
+        
+        // case 0x8007: // LF_REAL80
+        // case 0x800b: // LF_REAL48
+        // case 0x800c: // LF_COMPLEX32
+        // case 0x800d: // LF_COMPLEX64
+        // case 0x800e: // LF_COMPLEX80
+        // case 0x800f: // LF_COMPLEX128
+        // case 0x8010: // LF_VARSTRING
+        
+        case 0x8017: // LF_OCTWORD
+        case 0x8018:{ // LF_UOCTWORD
+            stream_skip(stream, 16);
+        }break;
+        
+        // case 0x8019: // LF_DECIMAL
+        // case 0x801a: // LF_DATE
+        // case 0x801b: // LF_UTF8STRING
+        // case 0x801c: // LF_REAL16
+        default:{
+            print("WARNING: Unhandled numeric leaf kind 0x%hx. This might lead to incorrect type information.\n", numeric_leaf);
+        }break;
+    }
+}
+
+void pdb_stream_skip_zero_terminated_string(struct stream *stream){
+    while(stream->offset < stream->size && stream->data[stream->offset] != 0){
+        stream->offset += 1;
+    }
+    
+    if(stream->offset < stream->size) stream->offset++;
+}
+
+u32 crc32(u32 initial_crc, u8 *data, u64 amount){
+    // crc32 works by using polynomial division over F_2.
+    // The i-th bit corresponds to X^i.
+    // for simplicity lets assume there are 100 bits:
+    //     msg: [b99:b98:...: b0] <-> b99 X^99 + b98 X^98 + ... + b0
+    
+    // CRC32 uses the 'generating polynomial':
+    //    X^32 + X^26 + X^23 + X^22 + X^16 + X^12 + X^11 + X^10 + X^8 + X^7 + X^5 + X^4 + X^2 + X + 1
+    // or 100000100110000010001110110110111 = 0x104c11db7, we usually omit the first one.
+    // The crc32 of a message is the remainder after long division by the generating polynomial.
+    
+    // ACTUALLY: Everything uses 'reflected' values. The reflected polynomial is 0xedb88320.
+    //           This means the highest value bit is the lowest bit.
+    
+#if 0
+    // 'reflect' the entry i.e swap all bits
+    u32 reflect(u32 entry){
+        for(u32 i = 0; i < 16; i++){
+            u32 j = 31 - i;
+            u32 bit1 = ((1 << i) & entry);
+            u32 bit2 = ((1 << j) & entry);
+            
+            entry ^= bit1 | bit2 | ((bit1 >> i) << j) | ((bit2 >> j) << i));
+        }
+        return entry;
+    }
+#endif
+    
+    // This table maps 'byte' -> ('byte' * X^32 mod g(X)).
+    static const u32 crc32_table[0x100] = {
+        0x00000000, 0x77073096, 0xee0e612c, 0x990951ba, 0x076dc419, 0x706af48f, 0xe963a535, 0x9e6495a3,
+        0x0edb8832, 0x79dcb8a4, 0xe0d5e91e, 0x97d2d988, 0x09b64c2b, 0x7eb17cbd, 0xe7b82d07, 0x90bf1d91,
+        0x1db71064, 0x6ab020f2, 0xf3b97148, 0x84be41de, 0x1adad47d, 0x6ddde4eb, 0xf4d4b551, 0x83d385c7,
+        0x136c9856, 0x646ba8c0, 0xfd62f97a, 0x8a65c9ec, 0x14015c4f, 0x63066cd9, 0xfa0f3d63, 0x8d080df5,
+        0x3b6e20c8, 0x4c69105e, 0xd56041e4, 0xa2677172, 0x3c03e4d1, 0x4b04d447, 0xd20d85fd, 0xa50ab56b,
+        0x35b5a8fa, 0x42b2986c, 0xdbbbc9d6, 0xacbcf940, 0x32d86ce3, 0x45df5c75, 0xdcd60dcf, 0xabd13d59,
+        0x26d930ac, 0x51de003a, 0xc8d75180, 0xbfd06116, 0x21b4f4b5, 0x56b3c423, 0xcfba9599, 0xb8bda50f,
+        0x2802b89e, 0x5f058808, 0xc60cd9b2, 0xb10be924, 0x2f6f7c87, 0x58684c11, 0xc1611dab, 0xb6662d3d,
+        0x76dc4190, 0x01db7106, 0x98d220bc, 0xefd5102a, 0x71b18589, 0x06b6b51f, 0x9fbfe4a5, 0xe8b8d433,
+        0x7807c9a2, 0x0f00f934, 0x9609a88e, 0xe10e9818, 0x7f6a0dbb, 0x086d3d2d, 0x91646c97, 0xe6635c01,
+        0x6b6b51f4, 0x1c6c6162, 0x856530d8, 0xf262004e, 0x6c0695ed, 0x1b01a57b, 0x8208f4c1, 0xf50fc457,
+        0x65b0d9c6, 0x12b7e950, 0x8bbeb8ea, 0xfcb9887c, 0x62dd1ddf, 0x15da2d49, 0x8cd37cf3, 0xfbd44c65,
+        0x4db26158, 0x3ab551ce, 0xa3bc0074, 0xd4bb30e2, 0x4adfa541, 0x3dd895d7, 0xa4d1c46d, 0xd3d6f4fb,
+        0x4369e96a, 0x346ed9fc, 0xad678846, 0xda60b8d0, 0x44042d73, 0x33031de5, 0xaa0a4c5f, 0xdd0d7cc9,
+        0x5005713c, 0x270241aa, 0xbe0b1010, 0xc90c2086, 0x5768b525, 0x206f85b3, 0xb966d409, 0xce61e49f,
+        0x5edef90e, 0x29d9c998, 0xb0d09822, 0xc7d7a8b4, 0x59b33d17, 0x2eb40d81, 0xb7bd5c3b, 0xc0ba6cad,
+        0xedb88320, 0x9abfb3b6, 0x03b6e20c, 0x74b1d29a, 0xead54739, 0x9dd277af, 0x04db2615, 0x73dc1683,
+        0xe3630b12, 0x94643b84, 0x0d6d6a3e, 0x7a6a5aa8, 0xe40ecf0b, 0x9309ff9d, 0x0a00ae27, 0x7d079eb1,
+        0xf00f9344, 0x8708a3d2, 0x1e01f268, 0x6906c2fe, 0xf762575d, 0x806567cb, 0x196c3671, 0x6e6b06e7,
+        0xfed41b76, 0x89d32be0, 0x10da7a5a, 0x67dd4acc, 0xf9b9df6f, 0x8ebeeff9, 0x17b7be43, 0x60b08ed5,
+        0xd6d6a3e8, 0xa1d1937e, 0x38d8c2c4, 0x4fdff252, 0xd1bb67f1, 0xa6bc5767, 0x3fb506dd, 0x48b2364b,
+        0xd80d2bda, 0xaf0a1b4c, 0x36034af6, 0x41047a60, 0xdf60efc3, 0xa867df55, 0x316e8eef, 0x4669be79,
+        0xcb61b38c, 0xbc66831a, 0x256fd2a0, 0x5268e236, 0xcc0c7795, 0xbb0b4703, 0x220216b9, 0x5505262f,
+        0xc5ba3bbe, 0xb2bd0b28, 0x2bb45a92, 0x5cb36a04, 0xc2d7ffa7, 0xb5d0cf31, 0x2cd99e8b, 0x5bdeae1d,
+        0x9b64c2b0, 0xec63f226, 0x756aa39c, 0x026d930a, 0x9c0906a9, 0xeb0e363f, 0x72076785, 0x05005713,
+        0x95bf4a82, 0xe2b87a14, 0x7bb12bae, 0x0cb61b38, 0x92d28e9b, 0xe5d5be0d, 0x7cdcefb7, 0x0bdbdf21,
+        0x86d3d2d4, 0xf1d4e242, 0x68ddb3f8, 0x1fda836e, 0x81be16cd, 0xf6b9265b, 0x6fb077e1, 0x18b74777,
+        0x88085ae6, 0xff0f6a70, 0x66063bca, 0x11010b5c, 0x8f659eff, 0xf862ae69, 0x616bffd3, 0x166ccf45,
+        0xa00ae278, 0xd70dd2ee, 0x4e048354, 0x3903b3c2, 0xa7672661, 0xd06016f7, 0x4969474d, 0x3e6e77db,
+        0xaed16a4a, 0xd9d65adc, 0x40df0b66, 0x37d83bf0, 0xa9bcae53, 0xdebb9ec5, 0x47b2cf7f, 0x30b5ffe9,
+        0xbdbdf21c, 0xcabac28a, 0x53b39330, 0x24b4a3a6, 0xbad03605, 0xcdd70693, 0x54de5729, 0x23d967bf,
+        0xb3667a2e, 0xc4614ab8, 0x5d681b02, 0x2a6f2b94, 0xb40bbe37, 0xc30c8ea1, 0x5a05df1b, 0x2d02ef8d
+    };
+    
+    // The crc_table is generated by this code:
+    
+#if 0
+    for(u32 entry_index = 0; entry_index < 0x100; entry_index++){
+        u32 entry = entry_index;
+        
+        for(u32 bit_index = 0; bit_index < 8; bit_index++){
+            // Perform polynomial division.
+            // If the top bit is set, we subtract (xor) the (reflected) generating polynomial.
+            entry = (entry & 1) ? ((entry >> 1) ^ reflect(0x04c11db7)) : (entry >> 1);
+        }
+        
+        // After we are done, 'entry' is the remainder of polynomial division over F_2 of 'i * X^32'
+        // store this in the table.
+        
+        crc_table[entry_index] = entry;
+    }
+#endif
+    
+    // Assume we have a message and a last byte
+    //      [msg?,...,msg0] | [lb7,...,lb0]
+    // and we have calculated the remainder of 'msg * X^32' after division by g(X) to be 'crc'
+    //     i.e:  msg * X^32 + crc = 0 mod g(X)
+    // Thus we calculate
+    //     crc' = (msg||lb) * X^32       mod g(X)
+    //          = msg * X^40 + lb * X^32 mod g(X)
+    //          = crc * X^8  + lb * X^32 mod g(X)
+    //          = (crc[31:8] << 8) + (crc[7:0] + lb) * X^32
+    // Note the reflection on crc.
+    // Finally the line in the for below is this equation for the crc' using the table above
+    //     crc' = (crc[31:8] << 8) + ((crc[7:0] + lb) * X^32 mod g(X))
+    
+    u32 crc = initial_crc;
+    for(u64 i = 0; i < amount; i++){
+        crc = (crc >> 8) ^ crc32_table[(crc & 0xff) ^ data[i]];
+    }
+    
+    return crc;
+}
+
+struct codeview_type_record_header{
+    u16 length;
+    u16 kind;
+};
+
+// returns -1 on failiure.
+int pdb_numeric_leaf_size_or_error(u16 numeric_leaf){
+    
+    if(!(numeric_leaf & 0x8000)) return 2;
+    
+    //
+    // @cleanup: implement this more correctly
+    //
+    
+    switch(numeric_leaf){
+        case 0x8000:{ // LF_CHAR
+            return 2 + 1;
+        }break;
+        case 0x8001:  // LF_SHORT
+        case 0x8002:{ // LF_USHORT
+            return 2 + 2;
+        }break;
+        case 0x8005: // LF_REAL32
+        case 0x8003: // LF_LONG
+        case 0x8004:{ // LF_ULONG
+            return 2 + 4;
+        }break;
+        
+        case 0x8009: // LF_QUADWORD
+        case 0x800a: // LF_UQUADWORD
+        case 0x8006:{ // LF_REAL64
+            return 2 + 8;
+        }break;
+        
+        case 0x8008: // LF_REAL128
+        
+        // case 0x8007: // LF_REAL80
+        // case 0x800b: // LF_REAL48
+        // case 0x800c: // LF_COMPLEX32
+        // case 0x800d: // LF_COMPLEX64
+        // case 0x800e: // LF_COMPLEX80
+        // case 0x800f: // LF_COMPLEX128
+        // case 0x8010: // LF_VARSTRING
+        
+        case 0x8017: // LF_OCTWORD
+        case 0x8018:{ // LF_UOCTWORD
+            return 2 + 16;
+        }break;
+        
+        // case 0x8019: // LF_DECIMAL
+        // case 0x801a: // LF_DATE
+        // case 0x801b: // LF_UTF8STRING
+        // case 0x801c: // LF_REAL16
+        default:{
+            return -1;
+        }break;
+    }
+    
+    // unreachable!
+    return -1;
+}
+
+char *pdb_type_record__get_name(u8 *type_record){
+    
+    struct codeview_type_header{
+        u16 length;
+        u16 kind;
+    } *type_header = (void *)type_record;
+    
+    char *type_data = (char *)(type_header + 1);
+    switch(type_header->kind){
+        
+        case /*LF_CLASS2*/0x1608:
+        case /*LF_INTERFACE2*/0x160b:
+        case /*LF_STRUCTURE2*/0x1609:{
+            type_data += 0x10;
+            type_data += pdb_numeric_leaf_size_or_error(*(u16 *)type_data); // count
+            type_data += pdb_numeric_leaf_size_or_error(*(u16 *)type_data); // size
+            return type_data;
+        }break;
+        
+        case /*LF_STRUCTURE*/0x1505:
+        case /*LF_CLASS*/0x1504:
+        case /*LF_INTERFACE*/0x1519:{
+            return type_data + 0x10 + pdb_numeric_leaf_size_or_error(*(u16 *)(type_data + 0x10));
+        }break;
+        
+        case /*LF_UNION2*/0x160a:{
+            type_data += 8;
+            type_data += pdb_numeric_leaf_size_or_error(*(u16 *)type_data); // count
+            type_data += pdb_numeric_leaf_size_or_error(*(u16 *)type_data); // size
+            return type_data;
+        }break;
+        
+        case /*LF_UNION*/0x1506:{
+            return type_data + 8 + pdb_numeric_leaf_size_or_error(*(u16 *)(type_data + 8));
+        }break;
+        
+        case /*LF_ENUM*/0x1507:{
+            return type_data + 12;
+        }break;
+        
+        case /*LF_ALIAS*/0x150a:{
+            return type_data + 4;
+        }break;
+        
+        default: return "";
+    }
+}
+
+u32 tpi_hash_table_index_for_record(struct codeview_type_record_header *type_record_header, u32 number_of_hash_buckets){
+    
+    u8 *type_data = (u8 *)(type_record_header + 1);
+    
+    char *name = 0;
+    size_t length = 0;
+    
+    switch(type_record_header->kind){
+        case /*LF_ALIAS*/0x150a:{
+            name = (char *)(type_data + 4);
+        }break;
+        
+        case /*LF_CLASS2*/0x1608:
+        case /*LF_INTERFACE2*/0x160b:
+        case /*LF_STRUCTURE2*/0x1609: // @note: These get rid of the 'count' member to get 32-bits of 'properties' but stay the same size.
+        case /*LF_UNION2*/0x160a: // @note: These get rid of the 'count' member to get 32-bits of 'properties' but stay the same size.
+        
+        case /*LF_UNION*/0x1506:
+        case /*LF_ENUM*/0x1507:
+        case /*LF_CLASS*/0x1504:
+        case /*LF_STRUCTURE*/0x1505:
+        case /*LF_INTERFACE*/0x1519:{
+            
+            u32 properties;
+            if(type_record_header->kind < 0x1600){
+                // @note: All of these have the 'properies' field at the same offset.
+                properties = *(u16 *)(type_data + 2);
+            }else{
+                // @note: These dropped the 'count' for 32-bits more of properties.
+                properties = *(u32 *)type_data;
+            }
+            
+            u16 forward_ref = (properties & (1 << 7));
+            u16 scoped      = (properties & (1 << 8));
+            u16 has_unique_name = (properties & (1 << 9));
+            
+            char *tag_name = pdb_type_record__get_name((u8 *)type_record_header);
+            
+            // @note: This only works for c. for c++ they also search for 'foo::<unnamed-tag>' stuff.
+            int anonymous = (strcmp(tag_name, "<unnamed-tag>") == 0) || (strcmp(tag_name, "__unnamed") == 0);
+            
+            if(!forward_ref && !anonymous){
+                if(!scoped){
+                    name = tag_name;
+                }else if(has_unique_name){
+                    name = tag_name + strlen(tag_name) + 1;
+                }
+            }
+        }break;
+        
+        case /*LF_UDT_SRC_LINE*/0x1606:
+        case /*LF_UDT_MOD_SRC_LINE*/0x1607:{
+            name   = (char *)type_data;
+            length = sizeof(u32);
+        }break;
+    }
+    
+    u32 hash_index;
+    if(name){
+        if(!length) length = strlen(name);
+        hash_index = pdb_hash_index((u8 *)name, length, number_of_hash_buckets);
+    }else{
+        hash_index = crc32(/*initial_crc*/0, (u8 *)type_record_header, type_record_header->length + sizeof(type_record_header->length)) % number_of_hash_buckets;
+    }
+    
+    return hash_index;
+}
 
 struct write_pdb_information{
     u32 amount_of_object_files;
@@ -75,11 +421,9 @@ struct write_pdb_information{
 
 void write_pdb(struct write_pdb_information *write_pdb_information){
     
-    
     struct memory_arena arena = create_memory_arena(giga_bytes(8));
     
     struct memory_arena pdb_information_stream = create_memory_arena(giga_bytes(8));
-    
     {
         // 
         // Fill out the information stream.
@@ -183,7 +527,6 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
         *push_struct_unaligned(&pdb_information_stream, u32) = /*impvVC140*/20140508;
     }
     
-    
     struct memory_arena names_stream = create_memory_arena(giga_bytes(8));
     {
         // 
@@ -222,6 +565,9 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
     struct memory_arena tpi_stream = create_memory_arena(giga_bytes(8));
     struct memory_arena ipi_stream = create_memory_arena(giga_bytes(8));
     
+    struct memory_arena tpi_hash_stream = create_memory_arena(giga_bytes(8));
+    struct memory_arena ipi_hash_stream = create_memory_arena(giga_bytes(8));
+    
     {
         struct tpi_stream_header{
             u32 version;
@@ -249,8 +595,29 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
         struct tpi_stream_header *tpi_header = push_struct(&tpi_stream, struct tpi_stream_header);
         struct tpi_stream_header *ipi_header = push_struct(&ipi_stream, struct tpi_stream_header);
         
+        struct tpi_index_offset_buffer_entry{
+            u32 type_index;
+            u32 offset_in_record_data;
+        };
+        
+        struct tpi_index_offset_buffer_entry *tpi_index_offset_buffer_last_entry = push_struct(&tpi_hash_stream, struct tpi_index_offset_buffer_entry);
+        tpi_index_offset_buffer_last_entry->type_index = 0x1000;
+        struct tpi_index_offset_buffer_entry *ipi_index_offset_buffer_last_entry = push_struct(&ipi_hash_stream, struct tpi_index_offset_buffer_entry);
+        ipi_index_offset_buffer_last_entry->type_index = 0x1000;
+        
         u32 ipi_type_index_at = 0x1000;
         u32 tpi_type_index_at = 0x1000;
+        
+        u32 unhandled_type_indices[0x100];
+        u32 unhandled_type_indices_at = 0;
+        
+        struct memory_arena hash_table_arena = create_memory_arena(giga_bytes(8));
+        
+        static struct tpi_hash_table_entry{
+            struct tpi_hash_table_entry *next;
+            u32 type_index;
+            struct codeview_type_record_header *type_record;
+        } *tpi_hash_table[0x3ffff] = {0}, *ipi_hash_table[0x3ffff] = {0};
         
         for(u32 object_file_index = 0; object_file_index < write_pdb_information->amount_of_object_files; object_file_index++){
             
@@ -267,7 +634,7 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
                 u16 kind;
             } type_record_header;
             
-            u32 type_index = 0x1000;
+            u32 object_file_type_index = 0x1000;
             
             while(!stream_read(&type_information, &type_record_header, sizeof(type_record_header))){
                 
@@ -282,9 +649,18 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
                 // from the object file local ones to the pdb ones.
                 // 
                 
-#define remap_type_index(v) (v) = ((v) < 0x1000 ? (v) : ((v >= type_index) ? 0 : object_file_type_index_to_pdb_file_type_index_map[v-0x1000]))
+#define remap_type_index(v) (v) = ((v) < 0x1000 ? (v) : ((v >= object_file_type_index) ? 0 : object_file_type_index_to_pdb_file_type_index_map[(v)-0x1000]))
                 
                 switch(type_record_header.kind){
+                    
+                    case /*LF_MODIFIER*/0x1001:
+                    case /*LF_POINTER */0x1002:{
+                        u32 *type_index = (void *)record_data;
+                        if(sizeof(*type_index) >= record_size) break;
+                        
+                        remap_type_index(*type_index);
+                    }break;
+                    
                     case /*LF_PROCEDURE*/0x1008:{
                         struct {
                             u32 return_value;
@@ -314,6 +690,127 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
                         for(u32 argument_index = 0; argument_index < arglist->count; argument_index++){
                             remap_type_index(arglist->argument_type[argument_index]);
                         }
+                    }break;
+                    
+                    case /*LF_FIELDLIST*/0x1203:{
+                        
+                        // LF_FIELDLIST consist of a sequence of sub-records that describe the 
+                        // struct, union or enum members in the form of LF_MEMBER or LF_ENUMERATE entries.
+                        // There is also a special LF_INDEX entry for LF_FIELDLIST which would exceed
+                        // the u16-length field.
+                        // One annoying thing is that these sub-records are not sized.
+                        
+                        struct stream record_stream = {
+                            .data = record_data,
+                            .size = record_size,
+                        };
+                        
+                        
+                        while(record_stream.offset + sizeof(u16) <= record_stream.size){
+                            switch(*(u16 *)(record_stream.data + record_stream.offset)){
+                                
+                                case /*LF_ENUMERATE*/0x1502:{
+                                    struct {
+                                        u16 kind;
+                                        u16 attributes;
+                                        //  numeric_leaf field_offset;
+                                        //  char name[];
+                                    } *enumerate = stream_read_array_by_pointer(&record_stream, sizeof(*enumerate), 1);
+                                    if(!enumerate) break;
+                                    
+                                    pdb_stream_skip_numeric_leaf(&record_stream);
+                                    pdb_stream_skip_zero_terminated_string(&record_stream);
+                                }break;
+                                
+                                case /*LF_MEMBER*/0x150d:{
+                                    struct {
+                                        u16 kind;
+                                        u16 attributes;
+                                        u32 type_index;
+                                        //  numeric_leaf field_offset;
+                                        //  char name[];
+                                    } *member = stream_read_array_by_pointer(&record_stream, sizeof(*member), 1);
+                                    if(!member) break;
+                                    
+                                    remap_type_index(member->type_index);
+                                    
+                                    pdb_stream_skip_numeric_leaf(&record_stream);
+                                    pdb_stream_skip_zero_terminated_string(&record_stream);
+                                    
+                                }break;
+                                
+                                case /*LF_INDEX*/0x1404:{
+                                    struct {
+                                        u16 kind;
+                                        u16 padding;
+                                        u32 type_index;
+                                    } *index = stream_read_array_by_pointer(&record_stream, sizeof(*index), 1);
+                                    if(!index) break;
+                                    remap_type_index(index->type_index);
+                                }break;
+                                
+                                default:{
+                                    print("Warning: Unhandled entry in LF_FIELDLIST of kind 0x%hx. Unable to recover for this fieldlist.\n", *(u16 *)(record_stream.data + record_stream.offset));
+                                    
+                                    record_stream.offset = record_stream.size; // break the outer loop.
+                                }break;
+                            }
+                            
+                            record_stream.offset = (record_stream.offset + 3) & ~3;
+                        }
+                    }break;
+                    
+                    case /*LF_ARRAY*/0x1503:{
+                        struct{
+                            u32 element_type;
+                            u32 index_type;
+                        } *array = (void *)record_data;
+                        
+                        if(sizeof(*array) > record_size) break;
+                        
+                        remap_type_index(array->element_type);
+                        remap_type_index(array->index_type);
+                    }break;
+                        
+                    case /*LF_STRUCTURE*/0x1505:{
+                        struct{
+                            u16 count;
+                            u16 property;
+                            u32 fieldlist;
+                            u32 derived;
+                            u32 vshape;
+                        } *structure = (void *)record_data;
+                        
+                        if(sizeof(*structure) > record_size) break;
+                        
+                        remap_type_index(structure->fieldlist);
+                        remap_type_index(structure->derived);
+                        remap_type_index(structure->vshape);
+                    }break;
+                    
+                    case /*LF_UNION*/0x1506:{
+                        struct{
+                            u16 count;
+                            u16 property;
+                            u32 fieldlist;
+                        } *lf_union = (void *)record_data;
+                        
+                        if(sizeof(*lf_union) > record_size) break;
+                        
+                        remap_type_index(lf_union->fieldlist);
+                    }break;
+                    case /*LF_ENUM*/0x1507:{
+                        struct{
+                            u16 count;
+                            u16 property;
+                            u32 underlying_type;
+                            u32 fieldlist;
+                        } *enumeration = (void *)record_data;
+                        
+                        if(sizeof(*enumeration) > record_size) break;
+                        
+                        remap_type_index(enumeration->underlying_type);
+                        remap_type_index(enumeration->fieldlist);
                     }break;
                     
                     // 
@@ -372,6 +869,38 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
                         
                         remap_type_index(*id);
                     }break;
+                    
+                    case /*LF_UDT_SRC_LINE*/0x1606:{
+                        
+                        // @incomplete: we are supposed to make this into a LF_UDT_MOD_SRC_LINE entry.
+                        
+                        struct {
+                            u32 type_index;
+                            u32 src_file_string_id;
+                            u32 line_number;
+                        } *udt_src_line  = (void *)record_data;
+                        
+                        if(sizeof(*udt_src_line) > record_size) break;
+                        
+                        remap_type_index(udt_src_line->type_index);
+                        remap_type_index(udt_src_line->src_file_string_id);
+                    }break;
+                    
+                    default:{
+                        int found = 0;
+                        for(u32 index = 0; index < unhandled_type_indices_at; index++){
+                            if(unhandled_type_indices[index] == type_record_header.kind){
+                                found = 1;
+                                break;
+                            }
+                        }
+                        
+                        if(!found){
+                            unhandled_type_indices[unhandled_type_indices_at++] = type_record_header.kind;
+                        }
+                        
+                        print("Warning: Unknown type record kind 0x%hx ignored. This might lead to incorrect type information in the pdb.\n", type_record_header.kind);
+                    }break;
                 }
                 
                 // 
@@ -380,24 +909,73 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
                 
                 u32 pdb_type_index;
                 
+                // 
+                // Add the type record either to the IPI or the TPI stream.
+                // 
+                struct codeview_type_record_header *record = (void *)(record_data - sizeof(type_record_header));
+                
+                struct memory_arena *stream, *hash_stream;
+                struct tpi_hash_table_entry *(*hash_table)[array_count(tpi_hash_table)];
+                struct tpi_stream_header *stream_header;
+                struct tpi_index_offset_buffer_entry **index_offset_buffer_last_entry;
+                u32 *type_index_at;
+                
                 if(0x1600 <= type_record_header.kind && type_record_header.kind < 0x1700){
-                    // This is an Id record and needs to go into the ipi stream.
-                    
-                    *push_struct(&ipi_stream, struct codeview_type_record_header) = type_record_header;
-                    memcpy(push_array(&ipi_stream, u8, record_size), record_data, record_size);
-                    
-                    pdb_type_index = ipi_type_index_at++;
+                    // This record is a Id-record.
+                    hash_table                     = &ipi_hash_table;
+                    stream                         = &ipi_stream;
+                    hash_stream                    = &ipi_hash_stream;
+                    stream_header                  =  ipi_header;
+                    index_offset_buffer_last_entry = &ipi_index_offset_buffer_last_entry;
+                    type_index_at                  = &ipi_type_index_at;
                 }else{
-                    // This is a Type record and needs to go into the tpi stream.
+                    // This record is a Type-record.
+                    hash_table                     = &tpi_hash_table;
+                    stream                         = &tpi_stream;
+                    hash_stream                    = &tpi_hash_stream;
+                    stream_header                  =  tpi_header;
+                    index_offset_buffer_last_entry = &tpi_index_offset_buffer_last_entry;
+                    type_index_at                  = &tpi_type_index_at;
+                }
+                
+                struct tpi_hash_table_entry *hash_table_entry = 0;
+                
+                u32 hash_index = tpi_hash_table_index_for_record(record, array_count(*hash_table));
+                
+                for(hash_table_entry = (*hash_table)[hash_index]; hash_table_entry; hash_table_entry = hash_table_entry->next){
+                    if(memcmp(hash_table_entry->type_record, record, sizeof(*record) + record_size) == 0){
+                        break;
+                    }
+                }
+                
+                if(hash_table_entry){
+                    pdb_type_index = hash_table_entry->type_index;
+                }else{
+                    // Emit a 'index offset buffer' entry if we need to.
+                    u32 current_offset = (u32)(arena_current(stream) - (u8 *)(stream_header + 1));
+                    if(current_offset + record_size + sizeof(*record) >= (*index_offset_buffer_last_entry)->offset_in_record_data + 8 * 0x1000){
+                        (*index_offset_buffer_last_entry) = push_struct(hash_stream, struct tpi_index_offset_buffer_entry);
+                        
+                        (*index_offset_buffer_last_entry)->offset_in_record_data = current_offset;
+                        (*index_offset_buffer_last_entry)->type_index = *type_index_at;
+                    }
                     
-                    *push_struct(&tpi_stream, struct codeview_type_record_header) = type_record_header;
-                    memcpy(push_array(&tpi_stream, u8, record_size), record_data, record_size);
+                    u8 *copied_record = push_array(stream, u8, sizeof(struct codeview_type_record_header) + record_size);
+                    memcpy(copied_record, record, sizeof(struct codeview_type_record_header) + record_size);
                     
-                    pdb_type_index = tpi_type_index_at++;
+                    pdb_type_index = (*type_index_at)++;
+                    
+                    hash_table_entry = push_struct(&hash_table_arena, struct tpi_hash_table_entry);
+                    hash_table_entry->type_index  = pdb_type_index;
+                    hash_table_entry->type_record = (void *)copied_record;
+                    
+                    hash_table_entry->next = (*hash_table)[hash_index];
+                    (*hash_table)[hash_index] = hash_table_entry;
                 }
                 
                 /*object_file_type_index_to_pdb_file_type_index_map = */
                 *push_struct(&arena, u32) = pdb_type_index;
+                object_file_type_index++;
             }
         }
         
@@ -406,17 +984,27 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
         tpi_header->minimal_type_index = 0x1000;
         tpi_header->one_past_last_type_index = tpi_type_index_at;
         tpi_header->byte_count_of_type_record_data_following_the_header = arena_current(&tpi_stream) - (u8 *)(tpi_header + 1);
-        tpi_header->stream_index_of_hash_stream = (u16)-1;
+        tpi_header->stream_index_of_hash_stream = PDB_STREAM_tpi_hash;
         tpi_header->stream_index_of_auxiliary_hash_stream = (u16)-1;
         
-        // @incomplete:
-        tpi_header->hash_key_size = 4;
-        tpi_header->number_of_hash_buckets = 0x1000;
-        tpi_header->hash_table_index_buffer_offset = 0;
-        tpi_header->hash_table_index_buffer_length = 0;
-        
         tpi_header->index_offset_buffer_offset = 0;
-        tpi_header->index_offset_buffer_length = 0;
+        tpi_header->index_offset_buffer_length = arena_current(&tpi_hash_stream) - tpi_hash_stream.base;
+        
+        // 
+        // Serialize the tpi_hash_table.
+        // 
+        u32 *tpi_hash_table_index_buffer = push_array(&tpi_hash_stream, u32, tpi_type_index_at - 0x1000);
+        
+        for(u32 index = 0; index < array_count(tpi_hash_table); index++){
+            for(struct tpi_hash_table_entry *entry = tpi_hash_table[index]; entry; entry = entry->next){
+                tpi_hash_table_index_buffer[entry->type_index - 0x1000] = index;
+            }
+        }
+        
+        tpi_header->hash_key_size = 4;
+        tpi_header->number_of_hash_buckets = array_count(tpi_hash_table);
+        tpi_header->hash_table_index_buffer_offset = (u8 *)tpi_hash_table_index_buffer - tpi_hash_stream.base;
+        tpi_header->hash_table_index_buffer_length = (tpi_type_index_at - 0x1000) * sizeof(*tpi_hash_table_index_buffer);
         
         tpi_header->udt_order_adjust_table_offset = 0;
         tpi_header->udt_order_adjust_table_length = 0;
@@ -426,20 +1014,35 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
         ipi_header->minimal_type_index = 0x1000;
         ipi_header->one_past_last_type_index = ipi_type_index_at;
         ipi_header->byte_count_of_type_record_data_following_the_header = arena_current(&ipi_stream) - (u8 *)(ipi_header + 1);
-        ipi_header->stream_index_of_hash_stream = (u16)-1;
+        ipi_header->stream_index_of_hash_stream = PDB_STREAM_ipi_hash;
         ipi_header->stream_index_of_auxiliary_hash_stream = (u16)-1;
         
-        // @incomplete:
-        ipi_header->hash_key_size = 4;
-        ipi_header->number_of_hash_buckets = 0x1000;
-        ipi_header->hash_table_index_buffer_offset = 0;
-        ipi_header->hash_table_index_buffer_length = 0;
-        
         ipi_header->index_offset_buffer_offset = 0;
-        ipi_header->index_offset_buffer_length = 0;
+        ipi_header->index_offset_buffer_length = arena_current(&ipi_hash_stream) - ipi_hash_stream.base;
+        
+        // 
+        // Serialize the ipi_hash_table.
+        // 
+        u32 *ipi_hash_table_index_buffer = push_array(&ipi_hash_stream, u32, ipi_type_index_at - 0x1000);
+        
+        for(u32 index = 0; index < array_count(ipi_hash_table); index++){
+            for(struct tpi_hash_table_entry *entry = ipi_hash_table[index]; entry; entry = entry->next){
+                ipi_hash_table_index_buffer[entry->type_index - 0x1000] = index;
+            }
+        }
+        
+        ipi_header->hash_key_size = 4;
+        ipi_header->number_of_hash_buckets = array_count(tpi_hash_table);
+        ipi_header->hash_table_index_buffer_offset = (u8 *)ipi_hash_table_index_buffer - ipi_hash_stream.base;
+        ipi_header->hash_table_index_buffer_length = (ipi_type_index_at - 0x1000) * sizeof(*ipi_hash_table_index_buffer);
         
         ipi_header->udt_order_adjust_table_offset = 0;
         ipi_header->udt_order_adjust_table_length = 0;
+        
+        print("unhandled type indices:\n");
+        for(u32 index = 0; index < unhandled_type_indices_at; index++){
+            print("    0x%x\n", unhandled_type_indices[index]);
+        }
     }
     
     
@@ -452,6 +1055,12 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
     
     streams[PDB_STREAM_ipi].data = ipi_stream.base,
     streams[PDB_STREAM_ipi].size = arena_current(&ipi_stream) - ipi_stream.base,
+    
+    streams[PDB_STREAM_tpi_hash].data = tpi_hash_stream.base,
+    streams[PDB_STREAM_tpi_hash].size = arena_current(&tpi_hash_stream) - tpi_hash_stream.base,
+    
+    streams[PDB_STREAM_ipi_hash].data = ipi_hash_stream.base,
+    streams[PDB_STREAM_ipi_hash].size = arena_current(&ipi_hash_stream) - ipi_hash_stream.base,
     
     streams[PDB_STREAM_names].data = names_stream.base;
     streams[PDB_STREAM_names].size = arena_current(&names_stream) - names_stream.base;
