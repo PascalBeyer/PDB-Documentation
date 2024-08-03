@@ -1628,10 +1628,12 @@ int main(int argc, char *argv[]){
     FILE *out = fopen("a.exe", "wb");
     fwrite(image_base, image_physical_size, 1, out);
     
-    struct stream *type_information_per_object = push_array(&arena, struct stream, amount_of_object_files);
+    struct write_pdb_per_object_information *per_object = push_array(&arena, struct write_pdb_per_object_information, amount_of_object_files);
     
     for(u32 object_file_index = 0; object_file_index < amount_of_object_files; object_file_index++){
         struct object_file *object_file = &object_files[object_file_index];
+        
+        per_object[object_file_index].file_name = object_file->file_name;
         
         for(u32 section_index = 0; section_index < object_file->number_of_sections; section_index++){
             struct coff_section_header *section_header = &object_file->section_headers[section_index];
@@ -1642,15 +1644,33 @@ int main(int argc, char *argv[]){
                 u8 *debug_data = stream_read_range_by_pointer(&object_file->stream, pointer_to_raw_data, 1, size_of_raw_data);
                 assert(debug_data);
                 
-                type_information_per_object[object_file_index] = (struct stream){.data = debug_data, .size = size_of_raw_data};
+                per_object[object_file_index].type_information = (struct stream){.data = debug_data, .size = size_of_raw_data};
             }
         }
     }
+    
+    struct pdb_section_contribution *section_contributions = push_array(&arena, struct pdb_section_contribution, amount_of_sections_to_combine);
+    
+    for(u32 section_index = 0; section_index < amount_of_sections_to_combine; section_index++){
         
+        struct coff_section_header *object_section = sections_to_combine[section_index].section_header;
+        struct object_file         *object_file    = sections_to_combine[section_index].object_file;
+        struct coff_section_header *image_section  = sections_to_combine[section_index].image_section_header;
+        section_contributions[section_index].section_id = (image_section - image_sections) + /*one-base*/1;
+        section_contributions[section_index].offset = object_section->virtual_address; // This is part of a hack! See above.
+        section_contributions[section_index].size   = object_section->size_of_raw_data;
+        section_contributions[section_index].module_index = object_file - object_files;
+        section_contributions[section_index].characteristics = image_section->characteristics;
+    }
+    
     struct write_pdb_information write_pdb_information = {0};
     write_pdb_information.pdb_guid = pdb_guid;
     write_pdb_information.amount_of_object_files = amount_of_object_files;
-    write_pdb_information.type_information_per_object = type_information_per_object;
+    write_pdb_information.per_object = per_object;
+    write_pdb_information.section_contributions = section_contributions;
+    write_pdb_information.amount_of_section_contributions = amount_of_sections_to_combine;
+    write_pdb_information.amount_of_image_sections = amount_of_image_sections;
+    write_pdb_information.image_section_headers = image_sections;
     
     write_pdb(&write_pdb_information);
     

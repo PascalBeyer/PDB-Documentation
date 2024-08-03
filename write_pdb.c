@@ -28,9 +28,9 @@ enum pdb_stream{
     PDB_STREAM_tpi_hash,
     PDB_STREAM_ipi_hash,
     
-    PDB_CURRENT_AMOUNT_OF_STREAMS, // @incomplete:
-    
     PDB_STREAM_section_header_dump,
+    
+    PDB_CURRENT_AMOUNT_OF_STREAMS, // @incomplete:
     
     PDB_STREAM_symbol_record,
     PDB_STREAM_global_symbol_index,
@@ -414,6 +414,17 @@ u32 tpi_hash_table_index_for_record(struct codeview_type_record_header *type_rec
     return hash_index;
 }
 
+struct pdb_section_contribution{
+    s16 section_id;
+    u16 padding1;
+    s32 offset;
+    s32 size;
+    u32 characteristics;
+    s16 module_index;
+    u16 padding2;
+    u32 data_crc;
+    u32 reloc_crc;
+};
 
 struct write_pdb_information{
     
@@ -425,7 +436,16 @@ struct write_pdb_information{
     } pdb_guid;
     
     u32 amount_of_object_files;
-    struct stream *type_information_per_object;
+    struct write_pdb_per_object_information{
+        char *file_name;
+        struct stream type_information;
+    } *per_object;
+    
+    size_t amount_of_section_contributions;
+    struct pdb_section_contribution *section_contributions;
+    
+    u16 amount_of_image_sections;
+    struct coff_section_header *image_section_headers;
 };
 
 void write_pdb(struct write_pdb_information *write_pdb_information){
@@ -625,7 +645,7 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
         
         for(u32 object_file_index = 0; object_file_index < write_pdb_information->amount_of_object_files; object_file_index++){
             
-            struct stream type_information = write_pdb_information->type_information_per_object[object_file_index];
+            struct stream type_information = write_pdb_information->per_object[object_file_index].type_information;
             
             u32 signature;
             if(stream_read(&type_information, &signature, sizeof(signature)) || signature != /*CV_SIGNATURE_C13*/4) continue;
@@ -1051,6 +1071,315 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
         }
     }
     
+    struct memory_arena dbi_stream = create_memory_arena(giga_bytes(8));
+    {
+        
+        // 
+        // Fill out the DBI stream.
+        // 
+        
+        struct dbi_stream_header{
+            u32 version_signature;
+            u32 version;
+            u32 age;
+            u16 stream_index_of_the_global_symbol_index_stream;
+            struct{
+                u16 minor_version : 8;
+                u16 major_version : 7;
+                u16 is_new_version_format : 1;
+            } toolchain_version;
+            u16 stream_index_of_the_public_symbol_index_stream;
+            u16 version_number_of_mspdb_dll_which_build_the_pdb;
+            u16 stream_index_of_the_symbol_record_stream;
+            u16 build_number_of_mspdb_dll_which_build_the_pdb;
+            
+            u32 byte_size_of_the_module_information_substream;   // substream 0
+            u32 byte_size_of_the_section_contribution_substream; // substream 1
+            u32 byte_size_of_the_section_map_substream;          // substream 2
+            u32 byte_size_of_the_source_information_substream;   // substream 3
+            u32 byte_size_of_the_type_server_map_substream;      // substream 4
+            
+            u32 index_of_the_MFC_type_server_in_type_server_map_substream;
+            
+            u32 byte_size_of_the_optional_debug_header_substream; // substream 6
+            u32 byte_size_of_the_edit_and_continue_substream;     // substream 5
+            
+            struct{
+                u16 was_linked_incrementally         : 1;
+                u16 private_symbols_were_stripped    : 1;
+                u16 the_pdb_allows_conflicting_types : 1;
+            } flags;
+            
+            u16 machine_type;
+            u32 reserved_padding;
+        } *dbi_stream_header = push_struct(&dbi_stream, struct dbi_stream_header);
+        
+        dbi_stream_header->version_signature = (u32)-1;
+        dbi_stream_header->version = 19990903;
+        dbi_stream_header->age = 1;
+        
+        dbi_stream_header->stream_index_of_the_global_symbol_index_stream = (u16)-1;
+        dbi_stream_header->stream_index_of_the_public_symbol_index_stream = (u16)-1;
+        dbi_stream_header->stream_index_of_the_symbol_record_stream = (u16)-1;
+        
+        // @cleanup: check these?
+        dbi_stream_header->toolchain_version.is_new_version_format = 1;
+        dbi_stream_header->toolchain_version.major_version = 14;
+        dbi_stream_header->toolchain_version.minor_version = 29;
+        dbi_stream_header->version_number_of_mspdb_dll_which_build_the_pdb = 30151;
+        dbi_stream_header->build_number_of_mspdb_dll_which_build_the_pdb   = 0;
+        
+        // Should we set `dbi_stream_header->flags.the_pdb_allows_conflicting_types`?
+        dbi_stream_header->machine_type = /*CV_CFL_AMD64*/0xd0;
+        
+        struct pdb_module_information{
+            u32 unused;
+            
+            struct pdb_section_contribution first_code_contribution;
+            
+            struct{
+                u16 was_written : 1;
+                u16 edit_and_continue_enabled : 1;
+                u16 unused : 6;
+                u16 TSM_index : 8;
+            } flags;
+            
+            u16 stream_index_of_module_symbol_stream;
+            
+            u32 byte_size_of_symbol_information;
+            u32 byte_size_of_c11_line_information;
+            u32 byte_size_of_c13_line_information;
+            
+            u16 amount_of_source_files;
+            u16 padding;
+            u32 unused2;
+            
+            u32 edit_and_continue_source_file_string_index;
+            u32 edit_and_continue_pdb_file_string_index;
+            
+            char module_name_and_file_name[];
+        } **module_information_per_object_file = push_array(&arena, struct pdb_module_information *, write_pdb_information->amount_of_object_files);
+        
+        struct pdb_module_information *linker_module = 0;
+        
+        {
+            // 
+            // Module Information Substream.
+            // 
+            
+            u8 *module_information_substream_start = arena_current(&dbi_stream);
+            
+            for(u32 object_file_index = 0; object_file_index < write_pdb_information->amount_of_object_files; object_file_index++){
+                struct pdb_module_information *module_information = push_struct(&dbi_stream, struct pdb_module_information);
+                module_information_per_object_file[object_file_index] = module_information;
+                
+                module_information->first_code_contribution = (struct pdb_section_contribution){
+                    .section_id = -1,
+                    .size = -1,
+                    .module_index = -1,
+                };
+                
+                // @incomplete:
+                module_information->stream_index_of_module_symbol_stream = (u16)-1;
+                module_information->byte_size_of_symbol_information = 0;
+                module_information->byte_size_of_c11_line_information = 0;
+                module_information->byte_size_of_c13_line_information = 0;
+                module_information->amount_of_source_files = 0;
+                
+                char *object_file_name = write_pdb_information->per_object[object_file_index].file_name;
+                size_t size = strlen(object_file_name) + 1;
+                
+                // Module name and object name.
+                memcpy(push_array(&dbi_stream, char, size), object_file_name, size);
+                memcpy(push_array(&dbi_stream, char, size), object_file_name, size);
+                
+                // Align the stream on a 4-byte boundary.
+                push_array(&dbi_stream, u32, 0);
+            }
+            
+            // @cleanup: Talk abount module alignment in the documentation.
+            
+            {
+                // 
+                // Special '* Linker *' module.
+                // 
+                
+                linker_module = push_struct(&dbi_stream, struct pdb_module_information);
+                
+                linker_module->first_code_contribution = (struct pdb_section_contribution){
+                    .section_id = -1,
+                    .size = -1,
+                    .module_index = -1,
+                };
+                
+                // @incomplete:
+                linker_module->stream_index_of_module_symbol_stream = (u16)-1;
+                linker_module->byte_size_of_symbol_information = 0;
+                linker_module->byte_size_of_c11_line_information = 0;
+                linker_module->byte_size_of_c13_line_information = 0;
+                linker_module->amount_of_source_files = 0;
+                
+                // @cleanup: talk about the object name being * Linker * in the Readme.
+                char *object_file_name = "* Linker *";
+                size_t size = strlen(object_file_name) + 1;
+                memcpy(push_array(&dbi_stream, char, size + /*object name = 0*/1), object_file_name, size);
+                
+                // Align the stream on a 4-byte boundary.
+                push_array(&dbi_stream, u32, 0);
+            }
+            
+            size_t module_information_substream_size = arena_current(&dbi_stream) - module_information_substream_start;
+            
+            dbi_stream_header->byte_size_of_the_module_information_substream = (u32)module_information_substream_size;
+        }
+        
+        {
+            // 
+            // Section Contribution Substream.
+            // 
+            
+            u8 *section_contribution_substream_start = arena_current(&dbi_stream);
+            
+            *push_struct(&dbi_stream, u32) = /*section contribution version 1*/0xeffe0000 + 19970605;
+            
+            struct pdb_section_contribution *section_contributions = push_array(&dbi_stream, struct pdb_section_contribution, write_pdb_information->amount_of_section_contributions);
+            
+            memcpy(section_contributions, write_pdb_information->section_contributions, sizeof(*section_contributions) * write_pdb_information->amount_of_section_contributions);
+            
+            size_t section_contribution_substream_size = arena_current(&dbi_stream) - section_contribution_substream_start;
+            
+            dbi_stream_header->byte_size_of_the_section_contribution_substream = (u32)section_contribution_substream_size;
+        }
+        
+        {
+            // 
+            // Section Map Substream
+            // 
+            u8 *section_map_substream_start = arena_current(&dbi_stream);
+            
+            *push_struct(&dbi_stream, u16) = /*number_of_section_descriptors        */write_pdb_information->amount_of_image_sections + 1;
+            *push_struct(&dbi_stream, u16) = /*number_of_logical_section_descriptors*/write_pdb_information->amount_of_image_sections + 1;
+            
+            struct pdb_section_map_entry{
+                u16 flags;
+                u16 logical_overlay_number;
+                u16 group;
+                u16 frame;
+                u16 section_name;
+                u16 class_name;
+                u32 offset;
+                u32 section_size;
+            } *section_map = push_array(&dbi_stream, struct pdb_section_map_entry, write_pdb_information->amount_of_image_sections + 1);
+            
+            // @cleanup: flags?
+            
+            for(u32 section_index = 0; section_index < write_pdb_information->amount_of_image_sections; section_index++){
+                section_map[section_index].frame = section_index + 1;
+                section_map[section_index].section_name = (u16)-1;
+                section_map[section_index].class_name = (u16)-1;
+                section_map[section_index].section_size = write_pdb_information->image_section_headers[section_index].virtual_size;
+            }
+            
+            u32 section_index = write_pdb_information->amount_of_image_sections;
+            section_map[section_index].frame = section_index + 1;
+            section_map[section_index].section_name = (u16)-1;
+            section_map[section_index].class_name = (u16)-1;
+            section_map[section_index].section_size = 0xffffffff;
+            
+            size_t section_map_substream_size = arena_current(&dbi_stream) - section_map_substream_start;
+            dbi_stream_header->byte_size_of_the_section_map_substream = (u32)section_map_substream_size;
+        }
+        
+        {
+            // 
+            // Source Information Substream
+            // @incomplete: For now this is stubbed.
+            // 
+            u8 *source_information_substream_start = arena_current(&dbi_stream);
+            
+            u16 amount_of_modules = (u16)(write_pdb_information->amount_of_object_files + 1);
+            
+            *push_struct(&dbi_stream, u16) = amount_of_modules;
+            *push_struct(&dbi_stream, u16) = /* truncated_amount_of_source_files */0;
+            
+            /*source_file_base_index_per_module*/push_array(&dbi_stream, u16, amount_of_modules);
+            /*amount_of_source_files_per_module*/push_array(&dbi_stream, u16, amount_of_modules);
+            
+            // @cleanup: source_file_name_offset_in_string_buffer is aligned or not Document?
+            /*source_file_name_offset_in_string_buffer*/;
+            
+            /*string_buffer*/push_struct(&dbi_stream, u8);
+            
+            // Align the stream on a 4-byte boundary.
+            push_array(&dbi_stream, u32, 0);
+            
+            size_t source_information_substream_size = arena_current(&dbi_stream) - source_information_substream_start;
+            dbi_stream_header->byte_size_of_the_source_information_substream = (u32)source_information_substream_size;
+        }
+        
+        {   
+            u8 *edit_and_continue_substream_start = arena_current(&dbi_stream);
+            
+            // 
+            // The Edit and continue substream is a version of the /names stream.
+            // Here is a stub!
+            // 
+            // Layout:
+            //     u32 signature;
+            //     u32 hash_version;
+            //     u32 string_buffer_byte_size;
+            //     u8  string_buffer[string_buffer_byte_size];
+            //     u32 bucket_count;
+            //     u32 buckets[bucket_count];
+            //     u32 amount_of_strings;
+            // 
+            
+            *push_struct(&dbi_stream, u32) = /*signature*/0xEFFEEFFE;
+            *push_struct(&dbi_stream, u32) = /*hash_version*/1;
+            
+            u32 *string_buffer_byte_size = push_struct(&dbi_stream, u32);
+            u8 *string_buffer = push_array(&dbi_stream, u8, 0);
+            
+            // "The first string inside the string buffer always has to be the zero-sized string, 
+            //  as a zero offset is also used as an invalid offset in the hash table."
+            push_struct(&dbi_stream, u8); // zero-sized string!
+            
+            *string_buffer_byte_size = push_array(&dbi_stream, u8, 0) - string_buffer;
+            
+            // @WARNING: "Importantly, the size of the string buffer is not aligned, 
+            //            thus usually the rest of the stream is unaligned."
+            
+            *push_struct_unaligned(&dbi_stream, u32) = /*bucket_count*/1;
+            *push_struct_unaligned(&dbi_stream, u32) = /*bucket[0]*/0;
+            
+            *push_struct_unaligned(&dbi_stream, u32) = /*amount_of_strings*/0;
+            
+            size_t edit_and_continue_substream_size = arena_current(&dbi_stream) - edit_and_continue_substream_start;
+            dbi_stream_header->byte_size_of_the_edit_and_continue_substream = (u32)edit_and_continue_substream_size;
+        }
+        
+        {
+            struct optional_debug_header_substream{
+                u16 stream_index_of_fpo_data;
+                u16 stream_index_of_exception_data;
+                u16 stream_index_of_fixup_data;
+                u16 stream_index_of_omap_to_src_data;
+                u16 stream_index_of_omap_from_src_data;
+                u16 stream_index_of_section_header_dump;
+                u16 stream_index_of_clr_token_to_clr_record_id;
+                u16 stream_index_of_xdata;
+                u16 stream_index_of_pdata;
+                u16 stream_index_of_new_fpo_data;
+                u16 stream_index_of_original_section_header_dump;
+            } *debug_headers = push_struct_unaligned(&dbi_stream, struct optional_debug_header_substream);
+            memset(debug_headers, 0xff, sizeof(*debug_headers)); // Initialize all to "not present".
+            
+            debug_headers->stream_index_of_section_header_dump = PDB_STREAM_section_header_dump;
+            
+            dbi_stream_header->byte_size_of_the_optional_debug_header_substream = sizeof(*debug_headers);
+        }
+    }
+    
     
     struct msf_stream streams[PDB_CURRENT_AMOUNT_OF_STREAMS] = {0};
     streams[PDB_STREAM_pdb_information].data = pdb_information_stream.base;
@@ -1058,6 +1387,9 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
     
     streams[PDB_STREAM_tpi].data = tpi_stream.base,
     streams[PDB_STREAM_tpi].size = arena_current(&tpi_stream) - tpi_stream.base,
+    
+    streams[PDB_STREAM_dbi].data = dbi_stream.base,
+    streams[PDB_STREAM_dbi].size = arena_current(&dbi_stream) - dbi_stream.base,
     
     streams[PDB_STREAM_ipi].data = ipi_stream.base,
     streams[PDB_STREAM_ipi].size = arena_current(&ipi_stream) - ipi_stream.base,
@@ -1070,6 +1402,9 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
     
     streams[PDB_STREAM_names].data = names_stream.base;
     streams[PDB_STREAM_names].size = arena_current(&names_stream) - names_stream.base;
+    
+    streams[PDB_STREAM_section_header_dump].data = (u8 *)write_pdb_information->image_section_headers;
+    streams[PDB_STREAM_section_header_dump].size = write_pdb_information->amount_of_image_sections * sizeof(*write_pdb_information->image_section_headers);
     
     // @note: The 0-th stream is added by the write_msf function implicitly.
     write_msf("a.pdb", streams + 1, array_count(streams) - 1);
