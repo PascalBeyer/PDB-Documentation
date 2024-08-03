@@ -1495,7 +1495,7 @@ void pdb_validate(u8 *pdb_base, size_t pdb_file_size, int dump){
                     
                     for(u32 index = 0; index < count; index++){
                         if(arg_types[index] >= type_index){
-                            error("Error: Argument %d of %s %s record with type index 0x%x specifies type index 0x%x (should be less than 0x%x).", index + 1, kind_name, type_or_id, type_index, arg_types[index], type_index);
+                            error("Error: Argument %u of %s %s record with type index 0x%x specifies type index 0x%x (should be less than 0x%x).", index + 1, kind_name, type_or_id, type_index, arg_types[index], type_index);
                         }
                     }
                 }break;
@@ -1571,7 +1571,7 @@ void pdb_validate(u8 *pdb_base, size_t pdb_file_size, int dump){
                         for(u32 offset = record_stream.offset; offset < aligned_offset; offset++){
                             u8 expected = 0xf0 + (aligned_offset - offset);
                             if(record_stream.data[offset] != expected){
-                                error("Error: Element %s in LF_FIELDLIST with type index %llx has invalid padding byte 0x%.2x (should be 0x%.2x).\n", name, type_index, record_stream.data[offset], expected);
+                                error("Error: Element %s in LF_FIELDLIST with type index 0x%x has invalid padding byte 0x%.2x (should be 0x%.2x).\n", name, type_index, record_stream.data[offset], expected);
                             }
                         }
                         record_stream.offset = aligned_offset;

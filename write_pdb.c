@@ -414,7 +414,16 @@ u32 tpi_hash_table_index_for_record(struct codeview_type_record_header *type_rec
     return hash_index;
 }
 
+
 struct write_pdb_information{
+    
+    struct pdb_guid{
+        u32 data1;
+        u16 data2;
+        u16 data3;
+        u8 data4[8];
+    } pdb_guid;
+    
     u32 amount_of_object_files;
     struct stream *type_information_per_object;
 };
@@ -432,17 +441,12 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
             u32 version;
             u32 timestamp;
             u32 age;
-            struct guid{
-                u32 data1;
-                u16 data2;
-                u16 data3;
-                u8 data4[8];
-            } guid;
+            struct pdb_guid guid;
         } *pdb_information_stream_header = push_struct(&pdb_information_stream, struct pdb_information_stream_header);
         pdb_information_stream_header->version = 20000404;
         pdb_information_stream_header->timestamp = time(NULL);
         pdb_information_stream_header->age = 1;
-        pdb_information_stream_header->guid = (struct guid){0x13371337, 0x1337, 0x1337, 0x13, 0x37, 0x13, 0x37, 0x13, 0x37, 0x13, 0x37};
+        pdb_information_stream_header->guid = write_pdb_information->pdb_guid;
         
         static struct {
             char *stream_name;
@@ -1039,9 +1043,11 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
         ipi_header->udt_order_adjust_table_offset = 0;
         ipi_header->udt_order_adjust_table_length = 0;
         
-        print("unhandled type indices:\n");
-        for(u32 index = 0; index < unhandled_type_indices_at; index++){
-            print("    0x%x\n", unhandled_type_indices[index]);
+        if(unhandled_type_indices_at > 0){
+            print("unhandled type indices:\n");
+            for(u32 index = 0; index < unhandled_type_indices_at; index++){
+                print("    0x%x\n", unhandled_type_indices[index]);
+            }
         }
     }
     

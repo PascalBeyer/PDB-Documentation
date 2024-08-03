@@ -1259,7 +1259,7 @@ int main(int argc, char *argv[]){
             debug_directory_rdata_start = image_rdata_section_header->size_of_raw_data;
             
             u64 debug_directory_entry_size = 28;
-            u64 rsds_debug_information_size = /*rsds*/4 + /*guid*/16 + /*age*/4 + sizeof("C:/Projects/linker/brogueCE/a.pdb");
+            u64 rsds_debug_information_size = /*rsds*/4 + /*guid*/16 + /*age*/4 + sizeof("a.pdb");
             
             image_rdata_section_header->size_of_raw_data += debug_directory_entry_size + rsds_debug_information_size;
         }
@@ -1410,6 +1410,9 @@ int main(int argc, char *argv[]){
         optional_header->data_directory[1].size            = dllimport_information_size;
     }
     
+    // @cleanup: we could get a more precise time here.
+    struct pdb_guid pdb_guid = { time(NULL), 0x1337, 0x1337, 0x13, 0x37, 0x13, 0x37, 0x13, 0x37, 0x13, 0x37};
+    
     {
         // 
         // Write in the debug data.
@@ -1417,7 +1420,7 @@ int main(int argc, char *argv[]){
         u32 debug_data_relative_virtual_address = image_rdata_section_header->virtual_address + debug_directory_rdata_start;
         u8 *debug_data_base = image_base + image_rdata_section_header->pointer_to_raw_data + debug_directory_rdata_start;
         
-        u64 rsds_debug_information_size = /*rsds*/4 + /*guid*/16 + /*age*/4 + sizeof("C:/Projects/linker/brogueCE/a.pdb");
+        u64 rsds_debug_information_size = /*rsds*/4 + /*guid*/16 + /*age*/4 + sizeof("a.pdb");
         
         struct{
             u32 characteristics;
@@ -1446,21 +1449,15 @@ int main(int argc, char *argv[]){
         
         struct _RSDS_DEBUG_DIRECTORY{
             char RSDS[4]; // "RSDS"
-            struct guid{
-                u32 data1;
-                u16 data2;
-                u16 data3;
-                u8 data4[8];
-            } pdb_guid;
+            struct pdb_guid pdb_guid;
             u32  pdb_age;
             char pdb_path[];
         } *rsds_debug_directory = (void *)(image_base + rsds_pointer_to_raw_data);
         memcpy(rsds_debug_directory->RSDS, "RSDS", 4);
-        rsds_debug_directory->pdb_guid = (struct guid){0x13371337, 0x1337, 0x1337, 0x13, 0x37, 0x13, 0x37, 0x13, 0x37, 0x13, 0x37};
+        rsds_debug_directory->pdb_guid = pdb_guid;
         rsds_debug_directory->pdb_age = 1;
-        memcpy(rsds_debug_directory->pdb_path, "C:/Projects/linker/brogueCE/a.pdb", sizeof("C:/Projects/linker/brogueCE/a.pdb"));
+        memcpy(rsds_debug_directory->pdb_path, "a.pdb", sizeof("a.pdb"));
     }
-    
     
     for(u64 section_index = 0; section_index < amount_of_sections_to_combine; section_index++){
         struct object_file *object_file = sections_to_combine[section_index].object_file;
@@ -1651,6 +1648,7 @@ int main(int argc, char *argv[]){
     }
         
     struct write_pdb_information write_pdb_information = {0};
+    write_pdb_information.pdb_guid = pdb_guid;
     write_pdb_information.amount_of_object_files = amount_of_object_files;
     write_pdb_information.type_information_per_object = type_information_per_object;
     

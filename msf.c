@@ -216,7 +216,6 @@ void write_msf(char *file_name, struct msf_stream *streams, u32 amount_of_stream
     
     FILE *file_handle = fopen(file_name, "wb");
     
-    printf("Writing header to page 0.\n");
     fwrite(msf_header, 0x1000, 1, file_handle);
     
     u64 write_offset = 0x1000;
@@ -268,8 +267,6 @@ void write_msf(char *file_name, struct msf_stream *streams, u32 amount_of_stream
                 
                 fwrite(zero_buffer, 0x1000, 1, file_handle); // Ignored free page map.
                 
-                printf("writing FPM [0x%x, 0x%x).\n", write_offset, write_offset + 0x2000);
-                
                 write_offset += 0x2000;
                 next_free_page_maps += 0x1000 * 0x1000;
             }
@@ -279,8 +276,6 @@ void write_msf(char *file_name, struct msf_stream *streams, u32 amount_of_stream
             if(size_to_write > (next_free_page_maps - write_offset)){
                 size_to_write = next_free_page_maps - write_offset;
             }
-            
-            printf("writing [0x%x, 0x%x), stream %d.\n", write_offset, write_offset + size_to_write, stream_index);
             fwrite(stream.data + offset_in_stream, 1, size_to_write, file_handle);
             
             if(size_to_write & 0xfff){
