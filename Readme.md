@@ -721,7 +721,7 @@ The current version of the DBI stream is `19990903`.
 
 The age of the DBI stream gets set to the age of the PDB whenever the DBI stream is written.
 
-* `stream_index_of_the_global_symbol_index_stream`, `stream_index_of_the_public_index_stream`, `stream_index_of_symbol_record_stream`
+* `stream_index_of_the_global_symbol_index_stream`, `stream_index_of_the_public_symbol_index_stream`, `stream_index_of_the_global_symbol_index_streamsymbol_record_stream`
 
 For these streams see later sections. These stream indices can technically be `-1` meaning they are not present, but they seem to be always present.
 
