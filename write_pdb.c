@@ -36,7 +36,7 @@ enum pdb_stream{
     PDB_STREAM_global_symbol_index,
     PDB_STREAM_public_symbol_index,
     
-    PBB_STREAM_module_symbol_stream_base,
+    PDB_STREAM_module_symbol_stream_base = PDB_CURRENT_AMOUNT_OF_STREAMS, // @cleanup:
 };
 
 // For reference see `HashPbCb` in `microsoft-pdb/PDB/include/misc.h`.
@@ -439,6 +439,7 @@ struct write_pdb_information{
     struct write_pdb_per_object_information{
         char *file_name;
         struct stream type_information;
+        struct stream symbol_information;
     } *per_object;
     
     size_t amount_of_section_contributions;
@@ -551,40 +552,23 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
         *push_struct_unaligned(&pdb_information_stream, u32) = /*impvVC140*/20140508;
     }
     
+    // @cleanup: this needs growing later!
+    char *names_stream_buckets[0x100] = {0};
     struct memory_arena names_stream = create_memory_arena(giga_bytes(8));
-    {
-        // 
-        // Fill out the /names stream.
-        // Layout:
-        //     u32 signature;
-        //     u32 hash_version;
-        //     u32 string_buffer_byte_size;
-        //     u8  string_buffer[string_buffer_byte_size];
-        //     u32 bucket_count;
-        //     u32 buckets[bucket_count];
-        //     u32 amount_of_strings;
-        // 
-        
-        *push_struct(&names_stream, u32) = /*signature*/0xEFFEEFFE;
-        *push_struct(&names_stream, u32) = /*hash_version*/1;
-        
-        u32 *string_buffer_byte_size = push_struct(&names_stream, u32);
-        u8 *string_buffer = push_array(&names_stream, u8, 0);
-        
-        // "The first string inside the string buffer always has to be the zero-sized string, 
-        //  as a zero offset is also used as an invalid offset in the hash table."
-        push_struct(&names_stream, u8); // zero-sized string!
-        
-        *string_buffer_byte_size = push_array(&names_stream, u8, 0) - string_buffer;
-        
-        // @WARNING: "Importantly, the size of the string buffer is not aligned, 
-        //            thus usually the rest of the stream is unaligned."
-        
-        *push_struct_unaligned(&names_stream, u32) = /*bucket_count*/1;
-        *push_struct_unaligned(&names_stream, u32) = /*bucket[0]*/0;
-        
-        *push_struct_unaligned(&names_stream, u32) = /*amount_of_strings*/0;
-    }
+    struct names_stream_header{
+        u32 signature;
+        u32 hash_version;
+        u32 string_buffer_byte_size;
+        char string_buffer[];
+    } *names_stream_header = push_struct(&names_stream, struct names_stream_header);
+    names_stream_header->signature = 0xEFFEEFFE;
+    names_stream_header->hash_version = 1;
+    names_stream_header->string_buffer_byte_size = 1;
+    
+    // "The first string inside the string buffer always has to be the zero-sized string, 
+    //  as a zero offset is also used as an invalid offset in the hash table."
+    push_struct(&names_stream, u8); // zero-sized string!
+    
     
     struct memory_arena tpi_stream = create_memory_arena(giga_bytes(8));
     struct memory_arena ipi_stream = create_memory_arena(giga_bytes(8));
@@ -1071,9 +1055,172 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
         }
     }
     
+    u64 amount_of_streams = PDB_CURRENT_AMOUNT_OF_STREAMS + write_pdb_information->amount_of_object_files;
+    struct msf_stream *streams = push_array(&arena, struct msf_stream, amount_of_streams);
+    
+    // @cleanup: allocate one per module symbol stream?
+    struct memory_arena module_symbol_stream = create_memory_arena(giga_bytes(8));
+    
+    struct module_sizes{
+        u32 symbols_size;
+        u32 lines_size;
+    } *module_sizes = push_array(&arena, struct module_sizes, write_pdb_information->amount_of_object_files);
+    
+    for(u32 object_file_index = 0; object_file_index < write_pdb_information->amount_of_object_files; object_file_index++){
+        
+        struct stream symbol_information = write_pdb_information->per_object[object_file_index].symbol_information;
+        
+        streams[PDB_STREAM_module_symbol_stream_base + object_file_index].data = arena_current(&module_symbol_stream);
+                
+        print("\n%s:\n", write_pdb_information->per_object[object_file_index].file_name);
+        
+        u32 signature;
+        if(stream_read(&symbol_information, &signature, sizeof(signature)) || signature != /*CV_SIGNATURE_C13*/4) continue;
+        
+        // 
+        // Copy out the signature to the symbol subsection of the module symobl stream.
+        // 
+        
+        u8 *symbols_start = arena_current(&module_symbol_stream);
+        *push_struct(&module_symbol_stream, u32) = signature;
+        
+        struct codeview_debug_subsection_header{
+            u32 type;
+            u32 length;
+        } debug_subsection_header;
+        
+        // 
+        // We iterate all of the subsection _once_ for all of the symobls (DEBUG_S_SYMBOLS)
+        // and then another time for all of the line information related entries. (DEBUG_S_LINES, DEBUG_S_STRINGTABLE, DEBUG_S_FILECHKSMS)
+        // 
+        
+        while(!stream_read(&symbol_information, &debug_subsection_header, sizeof(debug_subsection_header))){
+            print(debug_subsection_header);
+            
+            if(debug_subsection_header.type == /*DEBUG_S_SYMBOLS*/0xf1){
+                // @incomplete: Add the symbol information to the pdb.
+            }
+            
+            u32 size = (debug_subsection_header.length + 3) & ~3;
+            stream_read_array_by_pointer(&symbol_information, 1, size); // skip the data.
+        }
+        
+        u64 symbols_size = arena_current(&module_symbol_stream) - symbols_start;
+        
+        // 
+        // Extract line information.
+        // 
+        u8 *lines_start = arena_current(&module_symbol_stream);
+        
+        u8 *filechksms = 0;
+        u32 filechksms_size = 0;
+        
+        char *string_table = 0;
+        u32 string_table_size = 0;
+        
+        // 
+        // Reset the offset in the symbol information stream and read all line information related entries.
+        // 
+        symbol_information.offset = /*signature*/sizeof(u32);
+        while(!stream_read(&symbol_information, &debug_subsection_header, sizeof(debug_subsection_header))){
+            print("wat {}\n", debug_subsection_header);
+            
+            u32 aligned_subsection_size = (debug_subsection_header.length + 3) & ~3;
+            u8 *subsection_data = stream_read_array_by_pointer(&symbol_information, 1, aligned_subsection_size);
+            
+            if(debug_subsection_header.type == /*DEBUG_S_LINES*/0xf2){
+                // These can simply be copied out into the c13 line data.
+                *push_struct(&module_symbol_stream, struct codeview_debug_subsection_header) = debug_subsection_header;
+                
+                u8 *dest = push_array(&module_symbol_stream, u8, aligned_subsection_size);
+                memcpy(dest, subsection_data, aligned_subsection_size);
+            }
+            
+            if(debug_subsection_header.type == /*DEBUG_S_STRINGTABLE*/0xf3){
+                // These have to get added to the /names string table.
+                string_table      = (char *)subsection_data;
+                string_table_size = debug_subsection_header.length;
+            }
+            
+            if(debug_subsection_header.type == /*DEBUG_S_FILECHKSMS*/0xf4){
+                print("hello {}\n", debug_subsection_header);
+                filechksms      = subsection_data;
+                filechksms_size = debug_subsection_header.length;    
+            }
+        }
+        
+        // 
+        // Iterate all of the file checksums and patch the string offset.
+        // 
+        struct stream file_checksums_stream = { .data = filechksms, .size = filechksms_size };
+        
+        while(1){
+            
+            struct codeview_line_file_checksums{
+                u32 offset_in_string_table;
+                u8  checksum_size;
+                u8  checksum_kind;
+                u8  checksum[];
+            } *file_checksum_entry = stream_read_array_by_pointer(&file_checksums_stream, 6, 1);
+            if(!file_checksum_entry) break;
+            
+            // @cleanup: sanity-check this.
+            char *string = string_table + file_checksum_entry->offset_in_string_table;
+            size_t string_length = strlen(string);
+            u32 hash = pdb_hash_index((u8 *)string, string_length, (u32)-1);
+            
+            s64 offset_in_string_table = -1;
+            
+            // @cleanup: growing and failiure.
+            for(u32 index = 0; index < array_count(names_stream_buckets); index++){
+                u32 hash_index = (hash + index) % array_count(names_stream_buckets);
+                
+                char *bucket = names_stream_buckets[hash_index];
+                if(!bucket){
+                    char *string_in_string_buffer = push_array(&names_stream, char, string_length + 1);
+                    memcpy(string_in_string_buffer, string, string_length + 1);
+                    names_stream_buckets[hash_index] = string_in_string_buffer;
+                    offset_in_string_table = string_in_string_buffer - names_stream_header->string_buffer;
+                    break;
+                }
+                
+                if(strcmp(bucket, string) == 0){
+                    offset_in_string_table = bucket - names_stream_header->string_buffer;
+                    break;
+                }
+            }
+            
+            assert(offset_in_string_table != -1);
+            file_checksum_entry->offset_in_string_table = (u32)offset_in_string_table;
+            
+            u32 full_aligned_size = ((file_checksum_entry->checksum_size + 6) + 3) & ~3;
+            
+            // skip the checksum.
+            stream_read_array_by_pointer(&file_checksums_stream, full_aligned_size - 6, 1);
+        }
+        
+        // 
+        // Write out the file checksums header.
+        // 
+        debug_subsection_header.type   = /*DEBUG_S_FILECHKSMS*/0xf4;
+        debug_subsection_header.length = filechksms_size;
+        *push_struct(&module_symbol_stream, struct codeview_debug_subsection_header) = debug_subsection_header;
+        
+        u8 *filechksms_data = push_array(&module_symbol_stream, u8, (filechksms_size + 3) & ~3);
+        memcpy(filechksms_data, filechksms, filechksms_size);
+        
+        u64 lines_size = arena_current(&module_symbol_stream) - lines_start;
+        
+        *push_struct(&module_symbol_stream, u32) = 0; // @incomplete: amount_of_global_references
+        
+        streams[PDB_STREAM_module_symbol_stream_base + object_file_index].size = arena_current(&module_symbol_stream) - streams[PDB_STREAM_module_symbol_stream_base + object_file_index].data;
+        
+        module_sizes[object_file_index].lines_size = (u32)lines_size;
+        module_sizes[object_file_index].symbols_size = (u32)symbols_size;
+    }
+    
     struct memory_arena dbi_stream = create_memory_arena(giga_bytes(8));
     {
-        
         // 
         // Fill out the DBI stream.
         // 
@@ -1180,10 +1327,10 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
                 };
                 
                 // @incomplete:
-                module_information->stream_index_of_module_symbol_stream = (u16)-1;
-                module_information->byte_size_of_symbol_information = 0;
+                module_information->stream_index_of_module_symbol_stream = (u16)(PDB_STREAM_module_symbol_stream_base + object_file_index);
+                module_information->byte_size_of_symbol_information = module_sizes[object_file_index].symbols_size;
                 module_information->byte_size_of_c11_line_information = 0;
-                module_information->byte_size_of_c13_line_information = 0;
+                module_information->byte_size_of_c13_line_information = module_sizes[object_file_index].lines_size;
                 module_information->amount_of_source_files = 0;
                 
                 char *object_file_name = write_pdb_information->per_object[object_file_index].file_name;
@@ -1380,8 +1527,32 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
         }
     }
     
+    {
+        // 
+        // Finish the /names stream.
+        // 
     
-    struct msf_stream streams[PDB_CURRENT_AMOUNT_OF_STREAMS] = {0};
+        names_stream_header->string_buffer_byte_size = push_array(&names_stream, char, 0) - names_stream_header->string_buffer;
+        
+        // @WARNING: "Importantly, the size of the string buffer is not aligned, 
+        //            thus usually the rest of the stream is unaligned."
+        
+        u32 bucket_count = array_count(names_stream_buckets);
+        
+        *push_struct_unaligned(&names_stream, u32) = bucket_count;
+        u32 *buckets = push_array_unaligned(&names_stream, u32, bucket_count);
+        
+        u32 amount_of_strings = 0;
+        for(u32 bucket_index = 0; bucket_index < bucket_count; bucket_index++){
+            if(names_stream_buckets[bucket_index] != 0){
+                buckets[bucket_index] = names_stream_buckets[bucket_index] - names_stream_header->string_buffer;
+                amount_of_strings += 1;
+            }
+        }
+        
+        *push_struct_unaligned(&names_stream, u32) = amount_of_strings;
+    }
+    
     streams[PDB_STREAM_pdb_information].data = pdb_information_stream.base;
     streams[PDB_STREAM_pdb_information].size = arena_current(&pdb_information_stream) - pdb_information_stream.base;
     
@@ -1407,6 +1578,6 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
     streams[PDB_STREAM_section_header_dump].size = write_pdb_information->amount_of_image_sections * sizeof(*write_pdb_information->image_section_headers);
     
     // @note: The 0-th stream is added by the write_msf function implicitly.
-    write_msf("a.pdb", streams + 1, array_count(streams) - 1);
+    write_msf("a.pdb", streams + 1, amount_of_streams - 1);
 }
 

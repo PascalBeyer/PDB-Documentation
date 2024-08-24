@@ -1023,6 +1023,12 @@ int main(int argc, char *argv[]){
         return 1;
     }
     
+    // 
+    // @WARNING: We append the `.debug$S` sections after this stuff, 
+    //           so make sure not to allocate anything in `arena`,
+    //           before we did that!
+    // 
+    
     int compare_sections_to_combine(void *a, void *b){
         
         struct section_information *a_section_information = a;
@@ -1044,6 +1050,27 @@ int main(int argc, char *argv[]){
     // Sort the sections by name.
     // 
     qsort(sections_to_combine, amount_of_sections_to_combine, sizeof(*sections_to_combine), compare_sections_to_combine);
+    
+    // 
+    // Figure out all of the .debug$S sections and append them to the `sections_to_combine` array.
+    // 
+    struct section_information *debug_symbol_sections = push_array(&arena, struct section_information, 0);
+    
+    for(u32 object_file_index = 0; object_file_index < amount_of_object_files; object_file_index++){
+        struct object_file *object_file = &object_files[object_file_index];
+        
+        for(u32 section_index = 0; section_index < object_file->number_of_sections; section_index++){
+            struct coff_section_header *section_header = &object_file->section_headers[section_index];
+            
+            if(strncmp(section_header->name, ".debug$S", 8) == 0){
+                struct section_information *section_information = push_struct(&arena, struct section_information);
+                section_information->object_file = object_file;
+                section_information->section_header = section_header;
+            }
+        }
+    }
+    
+    u64 amount_of_debug_symbol_sections = push_array(&arena, struct section_information, 0) - debug_symbol_sections;
     
     // 
     // Build the final executable:
@@ -1459,7 +1486,7 @@ int main(int argc, char *argv[]){
         memcpy(rsds_debug_directory->pdb_path, "a.pdb", sizeof("a.pdb"));
     }
     
-    for(u64 section_index = 0; section_index < amount_of_sections_to_combine; section_index++){
+    for(u64 section_index = 0; section_index < amount_of_sections_to_combine + amount_of_debug_symbol_sections; section_index++){
         struct object_file *object_file = sections_to_combine[section_index].object_file;
         struct coff_section_header *relocation_section = sections_to_combine[section_index].section_header;
         
@@ -1470,14 +1497,19 @@ int main(int argc, char *argv[]){
         void *section_data = stream_read_range_by_pointer(&object_file->stream, relocation_section->pointer_to_raw_data, 1, relocation_section->size_of_raw_data);
         
         u8 *dest = 0;
-        {
+        
+        // If this is a `.debug$S` section, do not try to copy it to the image.
+        if(section_index < amount_of_sections_to_combine){
             u32 image_section_index = relocation_section->pointer_to_line_numbers; // @note: We store this index in this useless field.
             u32 offset_of_object_section_in_image_section = relocation_section->virtual_address;
             struct coff_section_header *image_section_header = &image_sections[image_section_index];
             
             dest = image_base + image_section_header->pointer_to_raw_data + offset_of_object_section_in_image_section;
+            
+            memcpy(dest, section_data, relocation_section->size_of_raw_data);
+        }else{
+            dest = section_data;
         }
-        memcpy(dest, section_data, relocation_section->size_of_raw_data);
         
         // Apply relocations.
         struct coff_relocation *relocations = stream_read_range_by_pointer(&object_file->stream, relocation_section->pointer_to_relocations, sizeof(struct coff_relocation), relocation_section->number_of_relocations);
@@ -1504,6 +1536,7 @@ int main(int argc, char *argv[]){
             
             struct string symbol_string = get_symbol_name(symbol, object_file);
             
+            u32 symbol_image_section_index = 0;
             u32 symbol_relative_virtual_address = 0;
             
             if(symbol->storage_class == /*IMAGE_SYM_CLASS_EXTERNAL*/2){
@@ -1527,9 +1560,9 @@ int main(int argc, char *argv[]){
                     struct coff_section_header *source_object_section = &external_symbol_object_file->section_headers[found->section_number-1]; // @note: One-based.
                     
                     u32 offset_of_object_section_in_image_section = source_object_section->virtual_address;
-                    u32 image_section_index = source_object_section->pointer_to_line_numbers; // @note: We store this index in this useless field.
+                    symbol_image_section_index = source_object_section->pointer_to_line_numbers; // @note: We store this index in this useless field.
                     
-                    struct coff_section_header *image_section_header = &image_sections[image_section_index];
+                    struct coff_section_header *image_section_header = &image_sections[symbol_image_section_index];
                     
                     symbol_relative_virtual_address = image_section_header->virtual_address + offset_of_object_section_in_image_section + found->offset;
                     
@@ -1543,16 +1576,17 @@ int main(int argc, char *argv[]){
                 }else if(found->is_ImageBase){
                     symbol_relative_virtual_address = 0;
                 }else{
+                    symbol_image_section_index      = image_bss_section_header - image_sections;
                     symbol_relative_virtual_address = image_bss_section_header->virtual_address + uninitialized_externals_bss_start + found->offset;
                 }
             }else if(symbol->storage_class == /*IMAGE_SYM_CLASS_STATIC*/3 || symbol->storage_class == /*IMAGE_SYM_CLASS_LABEL*/6){
                 
                 struct coff_section_header *source_object_section = &object_file->section_headers[symbol->section_number-1]; // @note: One-based.
                 
-                u32 image_section_index = source_object_section->pointer_to_line_numbers; // @note: We store this index in this useless field.
+                symbol_image_section_index = source_object_section->pointer_to_line_numbers; // @note: We store this index in this useless field.
                 u32 offset_of_source_object_section_in_image_section = source_object_section->virtual_address;
                 
-                struct coff_section_header *image_section_header = &image_sections[image_section_index];
+                struct coff_section_header *image_section_header = &image_sections[symbol_image_section_index];
                 
                 symbol_relative_virtual_address = image_section_header->virtual_address + offset_of_source_object_section_in_image_section + symbol->value;
             }else{
@@ -1596,8 +1630,11 @@ int main(int argc, char *argv[]){
                 
                 u32 relocation_virtual_address = image_section_header->virtual_address + offset_of_object_section_in_image_section + /*offset in section*/relocation_address;
                 
-                // @cleanup: is + correct?
                 *(u32 *)(dest + relocation_address) += symbol_relative_virtual_address - (relocation_virtual_address + 4 + rip_offset);
+            }else if(relocation_type == /*IMAGE_REL_AMD64_SECTION*/0xA){
+                *(u16 *)(dest + relocation_address) = symbol_image_section_index + 1; // +1 because it is requesting a section id not a section index!
+            }else if(relocation_type == /*IMAGE_REL_AMD64_SECREL*/0xB){
+                *(u32 *)(dest + relocation_address) = symbol_relative_virtual_address - image_sections[symbol_image_section_index].virtual_address;
             }else{
                 print("Error: Object %s uses unhandled relocation type %hu.\n", object_file->file_name, relocation_type);
                 return 1;
@@ -1647,6 +1684,24 @@ int main(int argc, char *argv[]){
                 per_object[object_file_index].type_information = (struct stream){.data = debug_data, .size = size_of_raw_data};
             }
         }
+    }
+    
+    for(u32 section_index = 0; section_index < amount_of_debug_symbol_sections; section_index++){
+        struct section_information *debug_section_information = &debug_symbol_sections[section_index];
+        struct coff_section_header *section_header = debug_section_information->section_header;
+        struct object_file *object_file = debug_section_information->object_file;
+        
+        u32 size_of_raw_data    = section_header->size_of_raw_data;
+        u32 pointer_to_raw_data = section_header->pointer_to_raw_data;
+        u8 *debug_data = stream_read_range_by_pointer(&object_file->stream, pointer_to_raw_data, 1, size_of_raw_data);
+        assert(debug_data);
+        
+        u64 object_file_index = object_file - object_files;
+        if(per_object[object_file_index].symbol_information.data){
+            print("WARNING: Object file '%s' contains more than one .debug$S section. This is currently not handled correctly.\n", object_file->file_name);
+        }
+        
+        per_object[object_file_index].symbol_information = (struct stream){.data = debug_data, .size = size_of_raw_data};
     }
     
     struct pdb_section_contribution *section_contributions = push_array(&arena, struct pdb_section_contribution, amount_of_sections_to_combine);

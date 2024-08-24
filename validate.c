@@ -3074,7 +3074,7 @@ void pdb_validate(u8 *pdb_base, size_t pdb_file_size, int dump){
                         error("Error: The size of the DEBUG_S_FILECHKSMS section (offset 0x%llx) of module %s (index %u) has invalid alignment. Expected 4-byte alignment.", subsection_start_offset, module_name, module_index);
                     }
                     
-                    if(dump) print("\n    [%llu] DEBUG_S_FILECHKSMS:\n", subsection_index);
+                    if(dump) print("\n    [%llu] DEBUG_S_FILECHKSMS (size 0x%x):\n", subsection_index, subsection.size);
                     
                     for(u64 entry_index = 0; subsection.offset < subsection.size; entry_index++){
                         

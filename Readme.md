@@ -2077,7 +2077,7 @@ This is obviously just a random sample and there might be many more symbols and 
 
 #### Relocations
 
-Because the `.debug$S` and `.debug$T` sections are contained in object files, which still have to be linked,
+Because the `.debug$S` sections are contained in object files, which still have to be linked,
 they cannot know the location of symbols they refer to. Therefore, there are relocations, that have to be applied.
 There are two specially designed relocation types for debug info, namely `IMAGE_REL_AMD64_SECTION` and `IMAGE_REL_AMD64_SECREL`.
 
