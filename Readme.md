@@ -1247,7 +1247,7 @@ struct codeview_symbol_header{ // Also see SYMTYPE in cvinfo.h
     u16 kind;
 };
 ```
-All symbol records in the symbol record stream are produced by `linker.exe`/`mspdbcode.dll` and are based on the symbols provided by the compiler in the object files.
+All symbol records in the symbol record stream are produced by `link.exe`/`mspdbcode.dll` and are based on the symbols provided by the compiler in the object files.
 
 The symbol record stream contains one `S_PROCREF` or `S_LPROCEREF` for every procedure, a `S_GDATA32` or `S_LDATA32` 
 for global declarations, a `S_CONSTANT` for every named constant (enum or const expr) and a `S_UDT` for every typedef.

@@ -13,7 +13,7 @@
 #define push_array_unaligned(arena, type, count) ((type *)memory_arena_allocate_bytes((arena), sizeof(type) * (count), 1))
 
 #define array_count(a) (sizeof(a)/sizeof(*a))
-
+#define offset_in_type(type, member) (u64)(&((type *)0)->member)
 
 enum pdb_stream{
     
@@ -30,9 +30,10 @@ enum pdb_stream{
     
     PDB_STREAM_section_header_dump,
     
+    PDB_STREAM_symbol_record,
+    
     PDB_CURRENT_AMOUNT_OF_STREAMS, // @incomplete:
     
-    PDB_STREAM_symbol_record,
     PDB_STREAM_global_symbol_index,
     PDB_STREAM_public_symbol_index,
     
@@ -576,48 +577,58 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
     struct memory_arena tpi_hash_stream = create_memory_arena(giga_bytes(8));
     struct memory_arena ipi_hash_stream = create_memory_arena(giga_bytes(8));
     
+    struct type_index_map_entry{
+        size_t size;
+        u32 *data;
+    } *type_index_map_per_object_file = push_array(&arena, struct type_index_map_entry, write_pdb_information->amount_of_object_files);
+    
+    struct tpi_index_offset_buffer_entry{
+        u32 type_index;
+        u32 offset_in_record_data;
+    } *ipi_index_offset_buffer = 0;
+    size_t ipi_index_offset_buffer_size = 0;
+    
+    struct tpi_stream_header{
+        u32 version;
+        u32 header_size;
+        u32 minimal_type_index;
+        u32 one_past_last_type_index;
+        u32 byte_count_of_type_record_data_following_the_header;
+        
+        u16 stream_index_of_hash_stream;
+        u16 stream_index_of_auxiliary_hash_stream;
+        
+        u32 hash_key_size;
+        u32 number_of_hash_buckets;
+        
+        u32 hash_table_index_buffer_offset;
+        u32 hash_table_index_buffer_length;
+        
+        u32 index_offset_buffer_offset;
+        u32 index_offset_buffer_length;
+        
+        u32 udt_order_adjust_table_offset;
+        u32 udt_order_adjust_table_length;
+    };
+    
     {
-        struct tpi_stream_header{
-            u32 version;
-            u32 header_size;
-            u32 minimal_type_index;
-            u32 one_past_last_type_index;
-            u32 byte_count_of_type_record_data_following_the_header;
-            
-            u16 stream_index_of_hash_stream;
-            u16 stream_index_of_auxiliary_hash_stream;
-            
-            u32 hash_key_size;
-            u32 number_of_hash_buckets;
-            
-            u32 hash_table_index_buffer_offset;
-            u32 hash_table_index_buffer_length;
-            
-            u32 index_offset_buffer_offset;
-            u32 index_offset_buffer_length;
-            
-            u32 udt_order_adjust_table_offset;
-            u32 udt_order_adjust_table_length;
-        };
         
         struct tpi_stream_header *tpi_header = push_struct(&tpi_stream, struct tpi_stream_header);
         struct tpi_stream_header *ipi_header = push_struct(&ipi_stream, struct tpi_stream_header);
-        
-        struct tpi_index_offset_buffer_entry{
-            u32 type_index;
-            u32 offset_in_record_data;
-        };
         
         struct tpi_index_offset_buffer_entry *tpi_index_offset_buffer_last_entry = push_struct(&tpi_hash_stream, struct tpi_index_offset_buffer_entry);
         tpi_index_offset_buffer_last_entry->type_index = 0x1000;
         struct tpi_index_offset_buffer_entry *ipi_index_offset_buffer_last_entry = push_struct(&ipi_hash_stream, struct tpi_index_offset_buffer_entry);
         ipi_index_offset_buffer_last_entry->type_index = 0x1000;
         
+        ipi_index_offset_buffer = ipi_index_offset_buffer_last_entry;
+        
+        
         u32 ipi_type_index_at = 0x1000;
         u32 tpi_type_index_at = 0x1000;
         
-        u32 unhandled_type_indices[0x100];
-        u32 unhandled_type_indices_at = 0;
+        u32 unhandled_type_leafs[0x100];
+        u32 unhandled_type_leafs_at = 0;
         
         struct memory_arena hash_table_arena = create_memory_arena(giga_bytes(8));
         
@@ -636,6 +647,8 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
             
             // We daisy chain this map into 'arena', whenever we handle a type record below.
             u32 *object_file_type_index_to_pdb_file_type_index_map = push_array(&arena, u32, 0);
+            
+            type_index_map_per_object_file[object_file_index].data = object_file_type_index_to_pdb_file_type_index_map;
             
             struct codeview_type_record_header{
                 u16 length;
@@ -713,7 +726,6 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
                             .size = record_size,
                         };
                         
-                        
                         while(record_stream.offset + sizeof(u16) <= record_stream.size){
                             switch(*(u16 *)(record_stream.data + record_stream.offset)){
                                 
@@ -779,7 +791,7 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
                         remap_type_index(array->element_type);
                         remap_type_index(array->index_type);
                     }break;
-                        
+                    
                     case /*LF_STRUCTURE*/0x1505:{
                         struct{
                             u16 count;
@@ -895,21 +907,21 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
                     }break;
                     
                     default:{
-                        int found = 0;
-                        for(u32 index = 0; index < unhandled_type_indices_at; index++){
-                            if(unhandled_type_indices[index] == type_record_header.kind){
-                                found = 1;
-                                break;
+                        if(unhandled_type_leafs_at < array_count(unhandled_type_leafs)){
+                            int found = 0;
+                            for(u32 index = 0; index < unhandled_type_leafs_at; index++){
+                                if(unhandled_type_leafs[index] == type_record_header.kind){
+                                    found = 1;
+                                    break;
+                                }
                             }
+                            
+                            if(!found) unhandled_type_leafs[unhandled_type_leafs_at++] = type_record_header.kind;
                         }
-                        
-                        if(!found){
-                            unhandled_type_indices[unhandled_type_indices_at++] = type_record_header.kind;
-                        }
-                        
                         print("Warning: Unknown type record kind 0x%hx ignored. This might lead to incorrect type information in the pdb.\n", type_record_header.kind);
                     }break;
                 }
+#undef remap_type_index
                 
                 // 
                 // Push the type record to the stream and insert an element into the map.
@@ -985,6 +997,8 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
                 *push_struct(&arena, u32) = pdb_type_index;
                 object_file_type_index++;
             }
+            
+            type_index_map_per_object_file[object_file_index].size = push_array(&arena, u32, 0) - object_file_type_index_to_pdb_file_type_index_map;
         }
         
         tpi_header->version = 20040203;
@@ -1027,6 +1041,7 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
         
         ipi_header->index_offset_buffer_offset = 0;
         ipi_header->index_offset_buffer_length = arena_current(&ipi_hash_stream) - ipi_hash_stream.base;
+        ipi_index_offset_buffer_size = ipi_header->index_offset_buffer_length / sizeof(*ipi_index_offset_buffer);
         
         // 
         // Serialize the ipi_hash_table.
@@ -1047,16 +1062,18 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
         ipi_header->udt_order_adjust_table_offset = 0;
         ipi_header->udt_order_adjust_table_length = 0;
         
-        if(unhandled_type_indices_at > 0){
-            print("unhandled type indices:\n");
-            for(u32 index = 0; index < unhandled_type_indices_at; index++){
-                print("    0x%x\n", unhandled_type_indices[index]);
+        if(unhandled_type_leafs_at > 0){
+            print("unhandled type leafs:\n");
+            for(u32 index = 0; index < unhandled_type_leafs_at; index++){
+                print("    0x%x\n", unhandled_type_leafs[index]);
             }
         }
     }
     
     u64 amount_of_streams = PDB_CURRENT_AMOUNT_OF_STREAMS + write_pdb_information->amount_of_object_files;
     struct msf_stream *streams = push_array(&arena, struct msf_stream, amount_of_streams);
+    
+    struct memory_arena symbol_record_stream = create_memory_arena(giga_bytes(8));
     
     // @cleanup: allocate one per module symbol stream?
     struct memory_arena module_symbol_stream = create_memory_arena(giga_bytes(8));
@@ -1066,12 +1083,15 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
         u32 lines_size;
     } *module_sizes = push_array(&arena, struct module_sizes, write_pdb_information->amount_of_object_files);
     
+    u32 unhandled_symbol_kinds[0x100];
+    u32 unhandled_symbol_kinds_at = 0;
+    
     for(u32 object_file_index = 0; object_file_index < write_pdb_information->amount_of_object_files; object_file_index++){
         
         struct stream symbol_information = write_pdb_information->per_object[object_file_index].symbol_information;
         
         streams[PDB_STREAM_module_symbol_stream_base + object_file_index].data = arena_current(&module_symbol_stream);
-                
+        
         print("\n%s:\n", write_pdb_information->per_object[object_file_index].file_name);
         
         u32 signature;
@@ -1095,14 +1115,329 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
         // 
         
         while(!stream_read(&symbol_information, &debug_subsection_header, sizeof(debug_subsection_header))){
-            print(debug_subsection_header);
+            
+            u32 subsection_size = (debug_subsection_header.length + 3) & ~3;
+            u8 *subsection_data = stream_read_array_by_pointer(&symbol_information, 1, subsection_size);
+            
+            struct stream subsection_stream = {.data = subsection_data, .size = subsection_size};
+            
+            size_t type_index_map_size = type_index_map_per_object_file[object_file_index].size;
+            u32   *type_index_map_data = type_index_map_per_object_file[object_file_index].data;
             
             if(debug_subsection_header.type == /*DEBUG_S_SYMBOLS*/0xf1){
-                // @incomplete: Add the symbol information to the pdb.
+                
+                struct codeview_symbol_header{
+                    u16 length;
+                    u16 kind;
+                };
+                
+                s64 level = 0;
+                s64 parent_offset = 0;
+                
+                struct codeview_block_symbol_header{
+                    struct codeview_symbol_header header;
+                    u32 pointer_to_parent;
+                    u32 pointer_to_end;
+                };
+                
+                // @cleanup: level is untrusted!
+#define enter_level(){                                                    \
+    *(u32 *)symbol_data = parent_offset;                                  \
+    parent_offset = arena_current(&module_symbol_stream) - symbols_start; \
+    level += 1;                                                           \
+}
+                
+#define exit_level(){                                                                      \
+    struct codeview_block_symbol_header *parent = (void *)(symbols_start + parent_offset); \
+    parent->pointer_to_end = arena_current(&module_symbol_stream) - symbols_start;         \
+    parent_offset = parent->pointer_to_parent;                                             \
+    level -= 1;                                                                            \
+}
+                while(1){
+                    struct codeview_symbol_header *symbol_header = stream_read_array_by_pointer(&subsection_stream, sizeof(*symbol_header), 1);
+                    if(!symbol_header) break;
+                    
+                    int symbol_size = symbol_header->length - sizeof(symbol_header->kind);
+                    u8 *symbol_data = stream_read_array_by_pointer(&subsection_stream, 1, symbol_size);
+                    if(!symbol_data) break;
+                    
+#define remap_type_index(v) (v) = ((v) < 0x1000 ? (v) : (((v) - 0x1000 >= type_index_map_size) ? 0 : type_index_map_data[(v)-0x1000]))
+                    
+                    int skip_copy_out = 0;
+                    int pack_to_gs = 0;
+                    char  *symbol_name = 0;
+                    size_t symbol_name_length = 0;
+                    
+                    switch(symbol_header->kind){
+                        case /*S_FRAMEPROC*/0x1012: break;
+                        
+                        case /*S_OBJNAME*/0x1101: break;
+                        
+                        case /*S_BLOCK32*/0x1103: enter_level(); break;
+                        
+                        case /*S_LABEL32*/0x1105: break;
+                        
+                        case /*S_CONSTANT*/0x1107:{
+                            if(symbol_size < 6) break;
+                            
+                            u32 *type_index = (u32 *)symbol_data;
+                            remap_type_index(*type_index);
+                            
+                            // If we are at a local scope, simply copy the thing out.
+                            if(level) break;
+                            
+                            // Parse the numeric leaf to get to the name.
+                            int numeric_leaf_size = pdb_numeric_leaf_size_or_error(*(u16 *)(symbol_data + 4));
+                            if((numeric_leaf_size < 0) || (symbol_size < 6 + numeric_leaf_size)) break;
+                            
+                            // Get the symbol name.
+                            symbol_name = (char *)(symbol_data + 6 + numeric_leaf_size);
+                            symbol_name_length = strnlen(symbol_name, symbol_size - (6 + numeric_leaf_size));
+                            if(symbol_name_length + 6 + numeric_leaf_size == symbol_size) break; // not zero-terminated?
+                            
+                            // Skip the symbol, if we actually need it, we add it in the fallback later.
+                            skip_copy_out = 1;
+                            pack_to_gs = 1; // @cleanup: We should only emit the thing if we could not register it globally.
+                        }break;
+                        
+                        case /*S_UDT*/0x1108:{
+                            if(symbol_size < 4) break;
+                            
+                            u32 *type_index = (u32 *)symbol_data;
+                            remap_type_index(*type_index);
+                            
+                            // @cleanup: They skip the udt if it is refering to a forward reference.
+                            
+                            // If we are at a local scope, simply copy the thing out.
+                            if(level) break;
+                            
+                            symbol_name = (char *)(symbol_data + 4);
+                            symbol_name_length = strnlen(symbol_name, symbol_size - 4);
+                            if(symbol_name_length + 4 == symbol_size) break; // not zero-terminated?
+                            
+                            // Skip the symbol, if we actually need it, we add it in the fallback later.
+                            skip_copy_out = 1;
+                            pack_to_gs = 1;
+                        }break;
+                        
+                        case /*S_LDATA32*/0x110c:{
+                            if(symbol_size < 10) break;
+                            
+                            u32 *type_index = (u32 *)symbol_data;
+                            remap_type_index(*type_index);
+                            
+                            if(level) break;
+                            
+                            // If the symbol has a name, copy it to the symbol record stream.
+                            
+                            symbol_name = (char *)(symbol_data + 10);
+                            symbol_name_length = strnlen(symbol_name, symbol_size - 10);
+                            if(symbol_name_length + 10 == symbol_size) break; // not zero-terminated?
+                            
+                            if(symbol_name_length != 0) pack_to_gs = 1;
+                        }break;
+                        
+                        case /*S_GDATA32*/0x110d:{
+                            if(symbol_size < 10) break;
+                            
+                            u32 *type_index = (u32 *)symbol_data;
+                            remap_type_index(*type_index);
+                            
+                            symbol_name = (char *)(symbol_data + 10);
+                            symbol_name_length = strnlen(symbol_name, symbol_size - 10);
+                            if(symbol_name_length + 10 == symbol_size) break; // not zero-terminated?
+                            
+                            // @note: These are global, hence they don't need to be copied out.
+                            skip_copy_out = 1;
+                            
+                            pack_to_gs = 1;
+                        }break;
+                        
+                        case /*S_REGREL32*/0x1111:{
+                            if(symbol_size < 8) break;
+                            
+                            u32 *type_index = (u32 *)(symbol_data + 4);
+                            remap_type_index(*type_index);
+                        }break;
+                        
+                        case /*S_CALLSITEINFO*/0x1139:{
+                            if(symbol_size < 12) break;
+                            
+                            u32 *type_index = (u32 *)(symbol_data + 8);
+                            remap_type_index(*type_index);
+                        }break;
+                        
+                        case /*S_COMPILE3*/0x113c: break;
+                        
+                        case /*S_LPROC32_ID*/0x1146:
+                        case /*S_GPROC32_ID*/0x1147:{
+                            if(symbol_size < 35) break;
+                            
+                            symbol_name = (char *)(symbol_data + 35);
+                            symbol_name_length = strnlen(symbol_name, symbol_size - 35);
+                            if(symbol_name_length + 35 == symbol_size) break; // not zero-terminated?
+                            
+                            // Remap the id to be referencing the IPI stream.
+                            u32 *id_index = (u32 *)(symbol_data + 24);
+                            remap_type_index(*id_index);
+                            
+                            if(*id_index >= 0x1000){
+                                // 
+                                // 1) Covert Id to type.
+                                // 
+                                
+                                u32 index = *id_index;
+                                u32 min = 0;
+                                u32 max = ipi_index_offset_buffer_size-1;
+                                
+                                while(max - min > 1){
+                                    u32 mid = (max - min)/2;
+                                    
+                                    if(index == ipi_index_offset_buffer[mid].type_index){
+                                        min = mid;
+                                        break;
+                                    }
+                                    
+                                    if(index > ipi_index_offset_buffer[mid].type_index){
+                                        min = mid;
+                                    }else{
+                                        max = mid;
+                                    }
+                                }
+                                
+                                struct tpi_index_offset_buffer_entry *entry = &ipi_index_offset_buffer[min];
+                                size_t offset_in_ipi_stream = entry->offset_in_record_data + sizeof(struct tpi_stream_header);
+                                
+                                struct codeview_type_record_header{
+                                    u16 length;
+                                    u16 kind;
+                                } *type_record_header = (void *)(ipi_stream.base + offset_in_ipi_stream);
+                                
+                                for(u32 i = entry->type_index; i < *id_index; i++){
+                                    type_record_header = (void *)((u8 *)type_record_header + type_record_header->length + sizeof(type_record_header->length));
+                                }
+                                
+                                if(type_record_header->kind != /*LF_FUNC_ID*/0x1601) break;
+                                if(type_record_header->length < 10) break;
+                                
+                                u32 *type_index = (u32 *)((u8 *)(type_record_header + 1) + 6);
+                                *id_index = *type_index;
+                            }
+                            
+                            // @note: This math works for both S_{G,L}PROC32.
+                            symbol_header->kind -= /*S_GPROC32_ID*/0x1147 - /*S_GPROC32*/0x1110;
+                            
+                            pack_to_gs = 1;
+                            
+                            enter_level();
+                        }break;
+                        
+                        case /*S_BUILDINFO*/0x114c:{
+                            if(symbol_size < 4) break;
+                            
+                            u32 *id_index = (u32 *)symbol_data;
+                            remap_type_index(*id_index);
+                        }break;
+                        
+                        case /*S_PROC_ID_END*/0x114f:{
+                            symbol_header->kind = 6;
+                        }break;
+                        
+                        case /*S_END*/6: exit_level(); break;
+                        
+                        case /*S_HEAPALLOCSITE*/0x115e:{
+                            if(symbol_size < 12) break;
+                            
+                            u32 *type_index = (u32 *)(symbol_data + 8);
+                            remap_type_index(*type_index);
+                        }break;
+                        
+                        default:{
+                            
+                            if(unhandled_symbol_kinds_at < array_count(unhandled_symbol_kinds)){
+                                int found = 0;
+                                for(u32 index = 0; index < unhandled_symbol_kinds_at; index++){
+                                    if(unhandled_symbol_kinds[index] == symbol_header->kind){
+                                        found = 1;
+                                        break;
+                                    }
+                                }
+                                
+                                if(!found) unhandled_symbol_kinds[unhandled_symbol_kinds_at++] = symbol_header->kind;
+                            }
+                            
+                            print("Warning: Unknown symbol record kind 0x%hx ignored. This might lead to incorrect symbol information in the pdb.\n", symbol_header->kind);
+                        }break;
+                    }
+                    
+                    int alignment = ((symbol_size + 3) & ~3) - symbol_size;
+                    symbol_header->length += alignment;
+                    
+                    if(pack_to_gs){
+                        // @incomplete: Handle the symbol record stream and the global symbol index stream.
+                        
+                        if(symbol_header->kind == /*S_GPROC32*/0x1110 || symbol_header->kind == /*S_LPROC32*/0x110f){
+                            struct codeview_reference_symbol{
+                                struct codeview_symbol_header header;
+                                u32 sum_name;
+                                u32 offset_in_module_symbol_stream;
+                                u16 module_index;
+                                char name[];
+                            } *reference_symbol;
+                            
+                            size_t reference_symbol_length = offset_in_type(struct codeview_reference_symbol, name) + symbol_name_length + /*zero-terminator*/1;
+                            int reference_symbol_alignment = ((reference_symbol_length + 3) & ~3) - reference_symbol_length;
+                            
+                            reference_symbol = memory_arena_allocate_bytes(&symbol_record_stream, reference_symbol_length + reference_symbol_alignment, 1);
+                            
+                            reference_symbol->header.kind = (symbol_header->kind == /*S_GPROC32*/0x1110) ? /*S_PROCREF*/0X1125 : /*S_LPROCREF*/0x1127;
+                            reference_symbol->header.length = (reference_symbol_length + reference_symbol_alignment) - sizeof(reference_symbol->header.length);
+                            reference_symbol->offset_in_module_symbol_stream = (u32)(arena_current(&module_symbol_stream) - module_symbol_stream.base);
+                            reference_symbol->module_index = object_file_index + 1; // These module id's are one-based for some reason.
+                            memcpy(reference_symbol->name, symbol_name, symbol_name_length);
+                            
+                            u8 *padding = (u8 *)reference_symbol + reference_symbol_length;
+                            for(u32 index = 0; index < reference_symbol_alignment; index++){
+                                padding[index] = 0xf0 + (reference_symbol_alignment - index);
+                            }
+                        }else if(symbol_header->kind == /*S_GDATA32*/0x110d || symbol_header->kind == /*S_LDATA32*/0x110c){
+                            // Just copy the symbol out.
+                            u8 *dest = push_array(&symbol_record_stream, u8, sizeof(*symbol_header) + symbol_size + alignment);
+                            memcpy(dest, symbol_header, symbol_size + sizeof(*symbol_header));
+                            
+                            u8 *padding = dest + sizeof(*symbol_header) + symbol_size;
+                            for(u32 index = 0; index < alignment; index++){
+                                padding[index] = 0xf0 + (alignment - index);
+                            }
+                        }else if(symbol_header->kind == /*S_UDT*/0x1108 || symbol_header->kind == /*S_CONSTANT*/0x1107){
+                            // For now just copy out the symbol, later we have to handle conflicts.
+                            u8 *dest = push_array(&symbol_record_stream, u8, sizeof(*symbol_header) + symbol_size + alignment);
+                            memcpy(dest, symbol_header, symbol_size + sizeof(*symbol_header));
+                            
+                            u8 *padding = dest + sizeof(*symbol_header) + symbol_size;
+                            for(u32 index = 0; index < alignment; index++){
+                                padding[index] = 0xf0 + (alignment - index);
+                            }
+                        }else{
+                            assert(!"Unhandled symbol in pack_to_gs codepath?");
+                        }
+                    }
+                    
+                    if(!skip_copy_out){
+                        // 
+                        // Copy the symbol to the module symbol stream.
+                        // 
+                        
+                        u8 *dest = push_array(&module_symbol_stream, u8, sizeof(*symbol_header) + symbol_size + alignment);
+                        memcpy(dest, symbol_header, symbol_size + sizeof(*symbol_header));
+                        
+                        u8 *padding = dest + sizeof(*symbol_header) + symbol_size;
+                        for(u32 index = 0; index < alignment; index++){
+                            padding[index] = 0xf0 + (alignment - index);
+                        }
+                    }
+                }
             }
-            
-            u32 size = (debug_subsection_header.length + 3) & ~3;
-            stream_read_array_by_pointer(&symbol_information, 1, size); // skip the data.
         }
         
         u64 symbols_size = arena_current(&module_symbol_stream) - symbols_start;
@@ -1116,14 +1451,13 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
         u32 filechksms_size = 0;
         
         char *string_table = 0;
-        u32 string_table_size = 0;
+        u32   string_table_size = 0;
         
         // 
         // Reset the offset in the symbol information stream and read all line information related entries.
         // 
         symbol_information.offset = /*signature*/sizeof(u32);
         while(!stream_read(&symbol_information, &debug_subsection_header, sizeof(debug_subsection_header))){
-            print("wat {}\n", debug_subsection_header);
             
             u32 aligned_subsection_size = (debug_subsection_header.length + 3) & ~3;
             u8 *subsection_data = stream_read_array_by_pointer(&symbol_information, 1, aligned_subsection_size);
@@ -1143,7 +1477,6 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
             }
             
             if(debug_subsection_header.type == /*DEBUG_S_FILECHKSMS*/0xf4){
-                print("hello {}\n", debug_subsection_header);
                 filechksms      = subsection_data;
                 filechksms_size = debug_subsection_header.length;    
             }
@@ -1219,6 +1552,14 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
         module_sizes[object_file_index].symbols_size = (u32)symbols_size;
     }
     
+    if(unhandled_symbol_kinds_at > 0){
+        print("unhandled symbol kinds:\n");
+        for(u32 index = 0; index < unhandled_symbol_kinds_at; index++){
+            print("    0x%x\n", unhandled_symbol_kinds[index]);
+        }
+    }
+    
+    
     struct memory_arena dbi_stream = create_memory_arena(giga_bytes(8));
     {
         // 
@@ -1267,7 +1608,7 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
         
         dbi_stream_header->stream_index_of_the_global_symbol_index_stream = (u16)-1;
         dbi_stream_header->stream_index_of_the_public_symbol_index_stream = (u16)-1;
-        dbi_stream_header->stream_index_of_the_symbol_record_stream = (u16)-1;
+        dbi_stream_header->stream_index_of_the_symbol_record_stream = PDB_STREAM_symbol_record;
         
         // @cleanup: check these?
         dbi_stream_header->toolchain_version.is_new_version_format = 1;
@@ -1576,6 +1917,9 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
     
     streams[PDB_STREAM_section_header_dump].data = (u8 *)write_pdb_information->image_section_headers;
     streams[PDB_STREAM_section_header_dump].size = write_pdb_information->amount_of_image_sections * sizeof(*write_pdb_information->image_section_headers);
+    
+    streams[PDB_STREAM_symbol_record].data = symbol_record_stream.base;
+    streams[PDB_STREAM_symbol_record].size = arena_current(&symbol_record_stream) - symbol_record_stream.base;
     
     // @note: The 0-th stream is added by the write_msf function implicitly.
     write_msf("a.pdb", streams + 1, amount_of_streams - 1);

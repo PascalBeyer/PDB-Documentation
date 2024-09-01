@@ -3320,7 +3320,7 @@ void pdb_validate(u8 *pdb_base, size_t pdb_file_size, int dump){
     u32 amount_of_public_symbols = 0;
     u32 amount_of_global_symbols = 0;
     
-    if(dump) print("\nSymbol record stream:\n");
+    if(dump) print("\nSymbol record stream (size 0x%x):\n", symbol_record_stream.size);
     
     for(u32 symbol_index = 0; symbol_record_stream.offset < symbol_record_stream.size; symbol_index++){
         u64 symbol_offset = symbol_record_stream.offset;
@@ -3332,12 +3332,12 @@ void pdb_validate(u8 *pdb_base, size_t pdb_file_size, int dump){
         } symbol_header; msf_read_from_stream(&symbol_record_stream, &symbol_header, sizeof(symbol_header));
         
         if((symbol_header.length & 3) != 2){
-            error("Error: Symbol %u (offset 0x%llx) in the symbol record stream has invalid length (0x%hx). Entry must be 4-byte aligned.", symbol_index, symbol_offset, symbol_header.length);
+            error("Error: Symbol %u (kind 0x%x) (offset 0x%llx) in the symbol record stream has invalid length (0x%hx). Entry must be 4-byte aligned.", symbol_index, symbol_header.kind, symbol_offset, symbol_header.length);
         }
         
         struct msf_stream symbol_data;
         if(msf_substream(&symbol_record_stream, symbol_header.length-2, &symbol_data)){
-            error("Error: Symbol %u (offset 0x%llx) in the symbol record stream has invalid length (0x%hx) which is too large to fit in the stream.", symbol_index, symbol_offset, symbol_header.length);
+            error("Error: Symbol %u (kind 0x%x) (offset 0x%llx) in the symbol record stream has invalid length (0x%hx) which is too large to fit in the stream.", symbol_index, symbol_header.kind, symbol_offset, symbol_header.length);
         }
         
         if(symbol_header.kind == /*S_PUB32*/0x110e){
