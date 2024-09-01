@@ -1141,17 +1141,17 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
                 };
                 
                 // @cleanup: level is untrusted!
-#define enter_level(){                                                    \
-    *(u32 *)symbol_data = parent_offset;                                  \
-    parent_offset = arena_current(&module_symbol_stream) - symbols_start; \
-    level += 1;                                                           \
+#define enter_level(){                                                                \
+    *(u32 *)symbol_data = parent_offset;                                              \
+    parent_offset = arena_current(&module_symbol_stream) - module_symbol_stream.base; \
+    level += 1;                                                                       \
 }
                 
-#define exit_level(){                                                                      \
-    struct codeview_block_symbol_header *parent = (void *)(symbols_start + parent_offset); \
-    parent->pointer_to_end = arena_current(&module_symbol_stream) - symbols_start;         \
-    parent_offset = parent->pointer_to_parent;                                             \
-    level -= 1;                                                                            \
+#define exit_level(){                                                                                  \
+    struct codeview_block_symbol_header *parent = (void *)(module_symbol_stream.base + parent_offset); \
+    parent->pointer_to_end = arena_current(&module_symbol_stream) - symbols_start;                     \
+    parent_offset = parent->pointer_to_parent;                                                         \
+    level -= 1;                                                                                        \
 }
                 while(1){
                     struct codeview_symbol_header *symbol_header = stream_read_array_by_pointer(&subsection_stream, sizeof(*symbol_header), 1);
@@ -1341,6 +1341,8 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
                         
                         case /*S_PROC_ID_END*/0x114f:{
                             symbol_header->kind = 6;
+                            
+                            exit_level();
                         }break;
                         
                         case /*S_END*/6: exit_level(); break;

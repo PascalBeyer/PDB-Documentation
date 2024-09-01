@@ -4123,6 +4123,7 @@ void pdb_validate(u8 *pdb_base, size_t pdb_file_size, int dump){
     {
         // 
         // Check that we have the correct global references for each module symbol stream.
+        // @incomplete: Validate pointer to parent and pointer to end members.
         // 
         
         for(u32 module_index = 0; module_index < amount_of_modules; module_index++){
