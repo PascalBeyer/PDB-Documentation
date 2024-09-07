@@ -3562,176 +3562,107 @@ void pdb_validate(u8 *pdb_base, size_t pdb_file_size, int dump){
         offset += 2 + length;
     }
     
-    // Public symbol index stream:
-    // 
-    // The public symbol index stream contains a verision of the global symbol index stream,
-    // which is intendet to speed-up looking up public symobls (S_PUB32).
-    // It also contains information about thunks in the executable and an address map,
-    // which allows looking up public symbols by relative virtual address.
-    // 
-    // The layout of this stream is as follows:
-    //      * header
-    //      * version of global symbol index stream for S_PUB32
-    //      * address map (mapping section:offset to S_PUB32)
-    //      * thunk map (mapping an index into the thunk table to the RVA of the "thunked" function)
-    //      * thunk section map (mapping section id's to relative virtual addresses)
-    // 
+    struct msf_stream public_symbol_index_substream = {0}; 
+    struct msf_stream address_map_substream = {0};
+    struct msf_stream thunk_map_substream = {0};
+    struct msf_stream thunk_section_map_substream = {0};
     
-    struct public_symbol_index_stream_header{
+    if(dbi_stream_header.stream_index_of_the_public_symbol_index_stream == (u16)-1){
+        print("Warning: The stream index of the public symbol index indicates that the public symbol index stream is not present.\n");
+        print("         The public symbol index stream is required for some functionality.\n");
+    }else{
+        // Public symbol index stream:
+        // 
+        // The public symbol index stream contains a verision of the global symbol index stream,
+        // which is intendet to speed-up looking up public symobls (S_PUB32).
+        // It also contains information about thunks in the executable and an address map,
+        // which allows looking up public symbols by relative virtual address.
+        // 
+        // The layout of this stream is as follows:
+        //      * header
+        //      * version of global symbol index stream for S_PUB32
+        //      * address map (mapping section:offset to S_PUB32)
+        //      * thunk map (mapping an index into the thunk table to the RVA of the "thunked" function)
+        //      * thunk section map (mapping section id's to relative virtual addresses)
+        // 
         
-        u32 symbol_index_byte_size;
-        u32 address_map_byte_size;
+        struct public_symbol_index_stream_header{
+            
+            u32 symbol_index_byte_size;
+            u32 address_map_byte_size;
+            
+            u32 number_of_thunks;
+            u32 thunk_byte_size;
+            u16 thunk_table_section_id;
+            u32 thunk_table_offset_in_section;
+            
+            u32 number_of_sections_in_thunk_section_map;
+        } public_symbol_index_stream_header;
         
-        u32 number_of_thunks;
-        u32 thunk_byte_size;
-        u16 thunk_table_section_id;
-        u32 thunk_table_offset_in_section;
-        
-        u32 number_of_sections_in_thunk_section_map;
-    } public_symbol_index_stream_header;
-    
-    if(msf_read_from_stream(&public_symbol_index_stream, &public_symbol_index_stream_header, sizeof(public_symbol_index_stream_header))){
-        error("Error: The public symbol index stream is too small to contain its header.\n");
-    }
-    
-    if(dump){
-        print("\nPublic symbol index stream:\n");
-        print("    symbol index size: 0x%x\n", public_symbol_index_stream_header.symbol_index_byte_size);
-        print("    address map size: 0x%x\n", public_symbol_index_stream_header.address_map_byte_size);
-        print("    number of thunks: %u\n", public_symbol_index_stream_header.number_of_thunks);
-        print("    thunk table section id: %hu\n", public_symbol_index_stream_header.thunk_table_section_id);
-        print("    thunk table offset: 0x%x\n", public_symbol_index_stream_header.thunk_table_offset_in_section);
-        print("    thunk section map length: %u\n", public_symbol_index_stream_header.number_of_sections_in_thunk_section_map);
-    }
-    
-    struct msf_stream public_symbol_index_substream; 
-    struct msf_stream address_map_substream;
-    struct msf_stream thunk_map_substream;
-    struct msf_stream thunk_section_map_substream;
-    
-    {
-        u64 index_stream_size = (u64)public_symbol_index_stream_header.symbol_index_byte_size;
-        u64 address_map_size  = (u64)public_symbol_index_stream_header.address_map_byte_size;
-        u64 thunk_map_size    = 4 * (u64)public_symbol_index_stream_header.number_of_thunks;
-        u64 section_map_size  = 8 * (u64)public_symbol_index_stream_header.number_of_sections_in_thunk_section_map;
-        
-        u64 expected_size = sizeof(public_symbol_index_stream_header) + index_stream_size + address_map_size + thunk_map_size + section_map_size;
-        
-        if(public_symbol_index_stream.size != expected_size){
-            error("Error: The size of the public symbol index stream is incorrect based off it header. Expected 0x%llx (/*index_stream*/0x%llx + /*address_map*/0x%llx + /*thunk_map*/0x%llx + /*thunk_section_map*/0x%llx). Got 0x%x.", expected_size, index_stream_size, address_map_size, thunk_map_size, section_map_size, public_symbol_index_stream.size);
+        if(msf_read_from_stream(&public_symbol_index_stream, &public_symbol_index_stream_header, sizeof(public_symbol_index_stream_header))){
+            error("Error: The public symbol index stream is too small to contain its header.\n");
         }
         
-        msf_substream(&public_symbol_index_stream, index_stream_size,  &public_symbol_index_substream);
-        msf_substream(&public_symbol_index_stream, address_map_size,   &address_map_substream);
-        msf_substream(&public_symbol_index_stream, thunk_map_size,     &thunk_map_substream);
-        msf_substream(&public_symbol_index_stream, section_map_size,   &thunk_section_map_substream);
-    }
-    
-    // 
-    // Validate the address map.
-    // The address map is an array of u32's which are offset in the the symbol record
-    // stream of all S_PUB32, ordered first by section, then by offset and lastly by name.
-    // 
-    // We make sure, that they are valid offsets and correctly sorted, and there is the 
-    // correct number of them. This implicitly checks that there is a 1:1 correspondance
-    // between offsets in the map and `S_PUB32` records.
-    // 
-    
-    u32 amount_of_address_map_entries = public_symbol_index_stream_header.address_map_byte_size / sizeof(u32);
-    if(amount_of_address_map_entries != amount_of_public_symbols){
-        char *less_more = (amount_of_address_map_entries < amount_of_public_symbols) ? "less" : "more";
-        error("Error: The adderss map inside public symbol index stream contains %s entries (%u) than there are public symbols (%u).", less_more, amount_of_address_map_entries, amount_of_public_symbols);
-    }
-    
-    {
-        s16 last_section_id = -1;
-        s32 last_offset     = 0;
-        u8 *last_name       = 0;
-        
-        if(dump) print("\nAddress Map:\n");
-        
-        for(u32 address_map_entry_index = 0; address_map_entry_index < amount_of_address_map_entries; address_map_entry_index++){
-            u32 symbol_offset = ((u32 *)address_map_substream.data)[address_map_entry_index];
-            if((symbol_offset & 3) != 0){
-                error("Error: Entry %u of the address map inside the public symbol index stream is an offset into the symbol record stream which has incorrect alignment. Expected 4 byte alignment.", address_map_entry_index);
-            }
-            
-            if(bsearch(&symbol_offset, public_symbol_offsets, amount_of_public_symbols, sizeof(symbol_offset), compare_u32) == 0){
-                error("Error: Entry %u of the address map inside the public symbol index stream specifies an invalid offset (0x%x) into the symbol record stream.", address_map_entry_index, symbol_offset);
-            }
-            
-            struct codeview_public_symbol{
-                u32 flags;
-                s32 offset;
-                u16 section_id;
-                u8 name[];
-            } *public_symbol = (void *)(symbol_record_stream.data + symbol_offset + 4);
-            
-            if(dump) print("    [%u] 0x%8.8x -> (%.3hu 0x%8.8x %s)\n", address_map_entry_index, symbol_offset, public_symbol->section_id, public_symbol->offset, public_symbol->name);
-            
-            if(last_section_id >= public_symbol->section_id){
-                
-                if(last_section_id > public_symbol->section_id){
-                    error("Error: The address map inside the public symbol index stream is not sorted by section id. Entry %u has section id %hd, Entry %u has section id %hu.", address_map_entry_index-1, last_section_id, address_map_entry_index, public_symbol->section_id);
-                }
-                
-                if(last_offset >= public_symbol->offset){
-                    
-                    if(last_offset > public_symbol->offset){
-                        error("Error: The address map inside the public symbol index stream is not sorted by section_id:offset. Entry %u has offset 0x%x, Entry %u has offset 0x%x.", address_map_entry_index-1, last_offset, address_map_entry_index, public_symbol->offset);
-                    }
-                    
-                    int difference = strcmp((char *)last_name, (char *)public_symbol->name);
-                    
-                    if(difference >= 0){
-                        
-                        if(difference > 0){
-                            error("Error: The address map inside the public symbol index stream is not sorted by section_id:offset:name. Entry %u has name %s, Entry %u has name %s (which is incorrect order).", address_map_entry_index-1, last_name, address_map_entry_index, public_symbol->name);
-                        }
-                    }
-                }
-            }
-            
-            last_section_id = public_symbol->section_id;
-            last_offset     = public_symbol->offset;
-            last_name       = public_symbol->name;
-        }
-    }
-    
-    if(public_symbol_index_stream_header.number_of_thunks){
-        if(public_symbol_index_stream_header.thunk_byte_size == 0){
-            error("Error: The thunk map inside the public symbol index stream is non-zero, but the size of a thunk is zero.");
+        if(dump){
+            print("\nPublic symbol index stream:\n");
+            print("    symbol index size: 0x%x\n", public_symbol_index_stream_header.symbol_index_byte_size);
+            print("    address map size: 0x%x\n", public_symbol_index_stream_header.address_map_byte_size);
+            print("    number of thunks: %u\n", public_symbol_index_stream_header.number_of_thunks);
+            print("    thunk table section id: %hu\n", public_symbol_index_stream_header.thunk_table_section_id);
+            print("    thunk table offset: 0x%x\n", public_symbol_index_stream_header.thunk_table_offset_in_section);
+            print("    thunk section map length: %u\n", public_symbol_index_stream_header.number_of_sections_in_thunk_section_map);
         }
         
-        u32 thunk_byte_size     = public_symbol_index_stream_header.thunk_byte_size;
-        u32 thunk_table_section = public_symbol_index_stream_header.thunk_table_section_id;
-        u32 thunk_table_size    = thunk_byte_size * public_symbol_index_stream_header.number_of_thunks; // @cleanup: overflow?
-        u32 thunk_table_offset  = public_symbol_index_stream_header.thunk_table_offset_in_section;
-        
-        char *section_id_offset_error = pdb_check_section_id_offset(&section_table, thunk_table_section, thunk_table_offset, thunk_table_size);
-        if(section_id_offset_error){
-            error("Error: The thunk map inside the public symbol index stream %s.", section_id_offset_error);
+        {
+            u64 index_stream_size = (u64)public_symbol_index_stream_header.symbol_index_byte_size;
+            u64 address_map_size  = (u64)public_symbol_index_stream_header.address_map_byte_size;
+            u64 thunk_map_size    = 4 * (u64)public_symbol_index_stream_header.number_of_thunks;
+            u64 section_map_size  = 8 * (u64)public_symbol_index_stream_header.number_of_sections_in_thunk_section_map;
+            
+            u64 expected_size = sizeof(public_symbol_index_stream_header) + index_stream_size + address_map_size + thunk_map_size + section_map_size;
+            
+            if(public_symbol_index_stream.size != expected_size){
+                error("Error: The size of the public symbol index stream is incorrect based off it header. Expected 0x%llx (/*index_stream*/0x%llx + /*address_map*/0x%llx + /*thunk_map*/0x%llx + /*thunk_section_map*/0x%llx). Got 0x%x.", expected_size, index_stream_size, address_map_size, thunk_map_size, section_map_size, public_symbol_index_stream.size);
+            }
+            
+            msf_substream(&public_symbol_index_stream, index_stream_size,  &public_symbol_index_substream);
+            msf_substream(&public_symbol_index_stream, address_map_size,   &address_map_substream);
+            msf_substream(&public_symbol_index_stream, thunk_map_size,     &thunk_map_substream);
+            msf_substream(&public_symbol_index_stream, section_map_size,   &thunk_section_map_substream);
         }
         
         // 
-        // The thunk map is used to map thunks to the rva of the non-thunk function.
-        // One can calculate as follows:
-        //     thunk_map[(thunk_rva - thunk_map_rva)/thunk_byte_size] = function_rva.
+        // Validate the address map.
+        // The address map is an array of u32's which are offset in the the symbol record
+        // stream of all S_PUB32, ordered first by section, then by offset and lastly by name.
         // 
-        if(dump) print("\nThunk map:\n");
+        // We make sure, that they are valid offsets and correctly sorted, and there is the 
+        // correct number of them. This implicitly checks that there is a 1:1 correspondance
+        // between offsets in the map and `S_PUB32` records.
+        // 
         
-        for(u32 thunk_index = 0; thunk_index < public_symbol_index_stream_header.number_of_thunks; thunk_index++){
-            u32 function_rva = ((u32 *)thunk_map_substream.data)[thunk_index];
+        u32 amount_of_address_map_entries = public_symbol_index_stream_header.address_map_byte_size / sizeof(u32);
+        if(amount_of_address_map_entries != amount_of_public_symbols){
+            char *less_more = (amount_of_address_map_entries < amount_of_public_symbols) ? "less" : "more";
+            error("Error: The adderss map inside public symbol index stream contains %s entries (%u) than there are public symbols (%u).", less_more, amount_of_address_map_entries, amount_of_public_symbols);
+        }
+        
+        {
+            s16 last_section_id = -1;
+            s32 last_offset     = 0;
+            u8 *last_name       = 0;
             
-            // Use the address map to find the 'S_PUB32' for the 'function_rva'.
-            s64 min_index = 0;
-            s64 max_index = amount_of_address_map_entries - 1;
+            if(dump) print("\nAddress Map:\n");
             
-            char *found = 0;
-            
-            while(min_index <= max_index){
-                u32 index = min_index + (max_index - min_index)/2;
-                u32 symbol_offset = ((u32 *)address_map_substream.data)[index];
+            for(u32 address_map_entry_index = 0; address_map_entry_index < amount_of_address_map_entries; address_map_entry_index++){
+                u32 symbol_offset = ((u32 *)address_map_substream.data)[address_map_entry_index];
+                if((symbol_offset & 3) != 0){
+                    error("Error: Entry %u of the address map inside the public symbol index stream is an offset into the symbol record stream which has incorrect alignment. Expected 4 byte alignment.", address_map_entry_index);
+                }
+                
+                if(bsearch(&symbol_offset, public_symbol_offsets, amount_of_public_symbols, sizeof(symbol_offset), compare_u32) == 0){
+                    error("Error: Entry %u of the address map inside the public symbol index stream specifies an invalid offset (0x%x) into the symbol record stream.", address_map_entry_index, symbol_offset);
+                }
                 
                 struct codeview_public_symbol{
                     u32 flags;
@@ -3740,64 +3671,139 @@ void pdb_validate(u8 *pdb_base, size_t pdb_file_size, int dump){
                     u8 name[];
                 } *public_symbol = (void *)(symbol_record_stream.data + symbol_offset + 4);
                 
-                u32 symbol_rva = section_table.data[public_symbol->section_id-1].virtual_address + public_symbol->offset;
+                if(dump) print("    [%u] 0x%8.8x -> (%.3hu 0x%8.8x %s)\n", address_map_entry_index, symbol_offset, public_symbol->section_id, public_symbol->offset, public_symbol->name);
                 
-                if(symbol_rva < function_rva){
-                    min_index = index + 1;
-                }else if(symbol_rva > function_rva){
-                    max_index = index - 1;
-                }else{
-                    found = (char *)public_symbol->name;
-                    break;
+                if(last_section_id >= public_symbol->section_id){
+                    
+                    if(last_section_id > public_symbol->section_id){
+                        error("Error: The address map inside the public symbol index stream is not sorted by section id. Entry %u has section id %hd, Entry %u has section id %hu.", address_map_entry_index-1, last_section_id, address_map_entry_index, public_symbol->section_id);
+                    }
+                    
+                    if(last_offset >= public_symbol->offset){
+                        
+                        if(last_offset > public_symbol->offset){
+                            error("Error: The address map inside the public symbol index stream is not sorted by section_id:offset. Entry %u has offset 0x%x, Entry %u has offset 0x%x.", address_map_entry_index-1, last_offset, address_map_entry_index, public_symbol->offset);
+                        }
+                        
+                        int difference = strcmp((char *)last_name, (char *)public_symbol->name);
+                        
+                        if(difference >= 0){
+                            
+                            if(difference > 0){
+                                error("Error: The address map inside the public symbol index stream is not sorted by section_id:offset:name. Entry %u has name %s, Entry %u has name %s (which is incorrect order).", address_map_entry_index-1, last_name, address_map_entry_index, public_symbol->name);
+                            }
+                        }
+                    }
                 }
+                
+                last_section_id = public_symbol->section_id;
+                last_offset     = public_symbol->offset;
+                last_name       = public_symbol->name;
+            }
+        }
+        
+        if(public_symbol_index_stream_header.number_of_thunks){
+            if(public_symbol_index_stream_header.thunk_byte_size == 0){
+                error("Error: The thunk map inside the public symbol index stream is non-zero, but the size of a thunk is zero.");
+            }
+            
+            u32 thunk_byte_size     = public_symbol_index_stream_header.thunk_byte_size;
+            u32 thunk_table_section = public_symbol_index_stream_header.thunk_table_section_id;
+            u32 thunk_table_size    = thunk_byte_size * public_symbol_index_stream_header.number_of_thunks; // @cleanup: overflow?
+            u32 thunk_table_offset  = public_symbol_index_stream_header.thunk_table_offset_in_section;
+            
+            char *section_id_offset_error = pdb_check_section_id_offset(&section_table, thunk_table_section, thunk_table_offset, thunk_table_size);
+            if(section_id_offset_error){
+                error("Error: The thunk map inside the public symbol index stream %s.", section_id_offset_error);
+            }
+            
+            // 
+            // The thunk map is used to map thunks to the rva of the non-thunk function.
+            // One can calculate as follows:
+            //     thunk_map[(thunk_rva - thunk_map_rva)/thunk_byte_size] = function_rva.
+            // 
+            if(dump) print("\nThunk map:\n");
+            
+            for(u32 thunk_index = 0; thunk_index < public_symbol_index_stream_header.number_of_thunks; thunk_index++){
+                u32 function_rva = ((u32 *)thunk_map_substream.data)[thunk_index];
+                
+                // Use the address map to find the 'S_PUB32' for the 'function_rva'.
+                s64 min_index = 0;
+                s64 max_index = amount_of_address_map_entries - 1;
+                
+                char *found = 0;
+                
+                while(min_index <= max_index){
+                    u32 index = min_index + (max_index - min_index)/2;
+                    u32 symbol_offset = ((u32 *)address_map_substream.data)[index];
+                    
+                    struct codeview_public_symbol{
+                        u32 flags;
+                        s32 offset;
+                        u16 section_id;
+                        u8 name[];
+                    } *public_symbol = (void *)(symbol_record_stream.data + symbol_offset + 4);
+                    
+                    u32 symbol_rva = section_table.data[public_symbol->section_id-1].virtual_address + public_symbol->offset;
+                    
+                    if(symbol_rva < function_rva){
+                        min_index = index + 1;
+                    }else if(symbol_rva > function_rva){
+                        max_index = index - 1;
+                    }else{
+                        found = (char *)public_symbol->name;
+                        break;
+                    }
+                }
+                
+                if(!found){
+                    error("Error: Entry %u of the thunk map inside the public symobl index stream, specifies a relative virtual address of 0x%x, but there is no 'S_PUB32' associated with it.", thunk_index, function_rva);
+                }
+                
+                if(dump) print("    [%u] 0x%x -> %s\n", thunk_index, function_rva, found);
+            }
+            
+            // 
+            // Validate the thunk section map.
+            // We only have to know that the section of the incremental linking table is present
+            // and that all the virtual addresses and sections are correct.
+            // 
+            
+            struct pdb_thunk_section_map_entry{
+                u32 virtual_address;
+                u16 section_id;
+            } *section_map = (void *)thunk_section_map_substream.data;
+            u32 amount_of_section_map_entries = thunk_section_map_substream.size/sizeof(struct pdb_thunk_section_map_entry);
+            
+            int found = 0;
+            
+            if(dump) print("\nThunk section map:\n");
+            
+            for(u32 section_map_entry_index = 0; section_map_entry_index < amount_of_section_map_entries; section_map_entry_index++){
+                struct pdb_thunk_section_map_entry section_map_entry = section_map[section_map_entry_index];
+                
+                if(dump) print("    [%u] virtual address: 0x%x, section id: 0x%hx\n", section_map_entry_index, section_map_entry.virtual_address, section_map_entry.section_id);
+                
+                u32 section_index = section_map_entry.section_id - 1;
+                if(section_index >= section_table.size){
+                    error("Error: Entry %u of the thunk section map of the thunk map contained in the public symbol index stream specifies an invalid section id (%hu).", section_map_entry_index, section_map_entry.section_id);
+                }
+                
+                if(section_table.data[section_index].virtual_address != section_map_entry.virtual_address){
+                    error("Error: Entry %u of the thunk section map of the thunk map contained in the public symbol index stream specifies a wrong virtual address 0x%x for section %hu, the correct virtual address is 0x%x (based of the section header dump stream).", section_map_entry_index, section_map_entry.virtual_address, section_map_entry.section_id, section_table.data[section_index].virtual_address);
+                }
+                
+                if(section_map_entry.section_id == thunk_table_section) found = 1;
             }
             
             if(!found){
-                error("Error: Entry %u of the thunk map inside the public symobl index stream, specifies a relative virtual address of 0x%x, but there is no 'S_PUB32' associated with it.", thunk_index, function_rva);
+                error("Error: The thunk section map inside the public symbol index stream does not contain an entry for the section which contains the incremental linking table (section id %u).\n", thunk_table_section);
             }
-            
-            if(dump) print("    [%u] 0x%x -> %s\n", thunk_index, function_rva, found);
-        }
-        
-        // 
-        // Validate the thunk section map.
-        // We only have to know that the section of the incremental linking table is present
-        // and that all the virtual addresses and sections are correct.
-        // 
-        
-        struct pdb_thunk_section_map_entry{
-            u32 virtual_address;
-            u16 section_id;
-        } *section_map = (void *)thunk_section_map_substream.data;
-        u32 amount_of_section_map_entries = thunk_section_map_substream.size/sizeof(struct pdb_thunk_section_map_entry);
-        
-        int found = 0;
-        
-        if(dump) print("\nThunk section map:\n");
-        
-        for(u32 section_map_entry_index = 0; section_map_entry_index < amount_of_section_map_entries; section_map_entry_index++){
-            struct pdb_thunk_section_map_entry section_map_entry = section_map[section_map_entry_index];
-            
-            if(dump) print("    [%u] virtual address: 0x%x, section id: 0x%hx\n", section_map_entry_index, section_map_entry.virtual_address, section_map_entry.section_id);
-            
-            u32 section_index = section_map_entry.section_id - 1;
-            if(section_index >= section_table.size){
-                error("Error: Entry %u of the thunk section map of the thunk map contained in the public symbol index stream specifies an invalid section id (%hu).", section_map_entry_index, section_map_entry.section_id);
-            }
-            
-            if(section_table.data[section_index].virtual_address != section_map_entry.virtual_address){
-                error("Error: Entry %u of the thunk section map of the thunk map contained in the public symbol index stream specifies a wrong virtual address 0x%x for section %hu, the correct virtual address is 0x%x (based of the section header dump stream).", section_map_entry_index, section_map_entry.virtual_address, section_map_entry.section_id, section_table.data[section_index].virtual_address);
-            }
-            
-            if(section_map_entry.section_id == thunk_table_section) found = 1;
-        }
-        
-        if(!found){
-            error("Error: The thunk section map inside the public symbol index stream does not contain an entry for the section which contains the incremental linking table (section id %u).\n", thunk_table_section);
         }
     }
     
-    for(u32 is_global_symbol_index_stream = 0; is_global_symbol_index_stream < 2; is_global_symbol_index_stream++){
+    int have_no_public_symbol_index_stream = (dbi_stream_header.stream_index_of_the_public_symbol_index_stream == (u16)-1);
+    for(u32 is_global_symbol_index_stream = have_no_public_symbol_index_stream; is_global_symbol_index_stream < 2; is_global_symbol_index_stream++){
         
         char *stream_name = is_global_symbol_index_stream ? "global symbol index" : "public symbol index";
         struct msf_stream symbol_index_stream = is_global_symbol_index_stream ? global_symbol_index_stream : public_symbol_index_substream;
