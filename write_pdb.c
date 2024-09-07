@@ -32,9 +32,10 @@ enum pdb_stream{
     
     PDB_STREAM_symbol_record,
     
+    PDB_STREAM_global_symbol_index,
+    
     PDB_CURRENT_AMOUNT_OF_STREAMS, // @incomplete:
     
-    PDB_STREAM_global_symbol_index,
     PDB_STREAM_public_symbol_index,
     
     PDB_STREAM_module_symbol_stream_base = PDB_CURRENT_AMOUNT_OF_STREAMS, // @cleanup:
@@ -1075,6 +1076,18 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
     
     struct memory_arena symbol_record_stream = create_memory_arena(giga_bytes(8));
     
+    struct pdb_loaded_hash_record{
+        struct pdb_loaded_hash_record *next;
+        struct codeview_symbol_header{
+            u16 length;
+            u16 kind;
+        } *symbol_record;
+        u32 reference_counter;
+        char *symbol_name;
+    } *global_symbol_index[4096] = {0};
+    
+    u32 global_symbol_count = 0;
+    
     // @cleanup: allocate one per module symbol stream?
     struct memory_arena module_symbol_stream = create_memory_arena(giga_bytes(8));
     
@@ -1098,7 +1111,14 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
         if(stream_read(&symbol_information, &signature, sizeof(signature)) || signature != /*CV_SIGNATURE_C13*/4) continue;
         
         // 
-        // Copy out the signature to the symbol subsection of the module symobl stream.
+        // "Start" a buffer for the "global_references", we grow it each time we hit the capacity.
+        // 
+        u64 global_references_capacity = 0x10;
+        u64 global_references_count = 0;
+        u32 *global_references = push_array(&arena, u32, global_references_capacity);
+        
+        // 
+        // Copy out the signature to the symbol subsection of the module symbol stream.
         // 
         
         u8 *symbols_start = arena_current(&module_symbol_stream);
@@ -1125,11 +1145,6 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
             u32   *type_index_map_data = type_index_map_per_object_file[object_file_index].data;
             
             if(debug_subsection_header.type == /*DEBUG_S_SYMBOLS*/0xf1){
-                
-                struct codeview_symbol_header{
-                    u16 length;
-                    u16 kind;
-                };
                 
                 s64 level = 0;
                 s64 parent_offset = 0;
@@ -1164,7 +1179,8 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
 #define remap_type_index(v) (v) = ((v) < 0x1000 ? (v) : (((v) - 0x1000 >= type_index_map_size) ? 0 : type_index_map_data[(v)-0x1000]))
                     
                     int skip_copy_out = 0;
-                    int pack_to_gs = 0;
+                    int pack_to_global_symbol_index_stream = 0;
+                    
                     char  *symbol_name = 0;
                     size_t symbol_name_length = 0;
                     
@@ -1197,7 +1213,7 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
                             
                             // Skip the symbol, if we actually need it, we add it in the fallback later.
                             skip_copy_out = 1;
-                            pack_to_gs = 1; // @cleanup: We should only emit the thing if we could not register it globally.
+                            pack_to_global_symbol_index_stream = 1; // @cleanup: We should only emit the thing if we could not register it globally.
                         }break;
                         
                         case /*S_UDT*/0x1108:{
@@ -1217,7 +1233,7 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
                             
                             // Skip the symbol, if we actually need it, we add it in the fallback later.
                             skip_copy_out = 1;
-                            pack_to_gs = 1;
+                            pack_to_global_symbol_index_stream = 1;
                         }break;
                         
                         case /*S_LDATA32*/0x110c:{
@@ -1234,7 +1250,7 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
                             symbol_name_length = strnlen(symbol_name, symbol_size - 10);
                             if(symbol_name_length + 10 == symbol_size) break; // not zero-terminated?
                             
-                            if(symbol_name_length != 0) pack_to_gs = 1;
+                            if(symbol_name_length != 0) pack_to_global_symbol_index_stream = 1;
                         }break;
                         
                         case /*S_GDATA32*/0x110d:{
@@ -1250,7 +1266,7 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
                             // @note: These are global, hence they don't need to be copied out.
                             skip_copy_out = 1;
                             
-                            pack_to_gs = 1;
+                            pack_to_global_symbol_index_stream = 1;
                         }break;
                         
                         case /*S_REGREL32*/0x1111:{
@@ -1327,7 +1343,7 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
                             // @note: This math works for both S_{G,L}PROC32.
                             symbol_header->kind -= /*S_GPROC32_ID*/0x1147 - /*S_GPROC32*/0x1110;
                             
-                            pack_to_gs = 1;
+                            pack_to_global_symbol_index_stream = 1;
                             
                             enter_level();
                         }break;
@@ -1375,10 +1391,15 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
                     int alignment = ((symbol_size + 3) & ~3) - symbol_size;
                     symbol_header->length += alignment;
                     
-                    if(pack_to_gs){
-                        // @incomplete: Handle the symbol record stream and the global symbol index stream.
+                    if(pack_to_global_symbol_index_stream){
+                        
+                        struct codeview_symbol_header *symbol_record_symbol = push_array(&symbol_record_stream, struct codeview_symbol_header, 0);
+                        int symbol_is_exported = 0;
+                        int should_add_a_global_reference = 0;
                         
                         if(symbol_header->kind == /*S_GPROC32*/0x1110 || symbol_header->kind == /*S_LPROC32*/0x110f){
+                            symbol_is_exported = (symbol_header->kind == /*S_GPROC32*/0x1110);
+                            
                             struct codeview_reference_symbol{
                                 struct codeview_symbol_header header;
                                 u32 sum_name;
@@ -1403,6 +1424,8 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
                                 padding[index] = 0xf0 + (reference_symbol_alignment - index);
                             }
                         }else if(symbol_header->kind == /*S_GDATA32*/0x110d || symbol_header->kind == /*S_LDATA32*/0x110c){
+                            symbol_is_exported = (symbol_header->kind == /*S_GDATA32*/0x110d);
+                            
                             // Just copy the symbol out.
                             u8 *dest = push_array(&symbol_record_stream, u8, sizeof(*symbol_header) + symbol_size + alignment);
                             memcpy(dest, symbol_header, symbol_size + sizeof(*symbol_header));
@@ -1421,7 +1444,81 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
                                 padding[index] = 0xf0 + (alignment - index);
                             }
                         }else{
-                            assert(!"Unhandled symbol in pack_to_gs codepath?");
+                            assert(!"Unhandled symbol in pack_to_global_symbol_index_stream codepath?");
+                        }
+                        
+                        u16 hash_index = (u16)pdb_hash_index((u8 *)symbol_name, symbol_name_length, array_count(global_symbol_index));
+                        
+                        struct pdb_loaded_hash_record **previous_to_add_to = 0;
+                        
+                        struct pdb_loaded_hash_record *hash_record = global_symbol_index[hash_index];
+                        for(; hash_record; hash_record = hash_record->next){
+                            if(hash_record->symbol_record->length == symbol_record_symbol->length){
+                                if(memcmp(hash_record->symbol_record, symbol_record_symbol, symbol_record_symbol->length + sizeof(symbol_record_symbol->length)) == 0){
+                                    // We have found a matching symbol record.
+                                    hash_record->reference_counter++;
+                                    
+                                    should_add_a_global_reference = 1;
+                                    break;
+                                }
+                            }
+                            
+                            if(strcmp(symbol_name, hash_record->symbol_name) == 0){
+                                // We have found a symbol of the same name, but it was not a match.
+                                
+                                if(symbol_is_exported){
+                                    // Add it to the start of the bucket.
+                                    previous_to_add_to = &global_symbol_index[hash_index];
+                                    break;
+                                }
+                            }
+                            
+                            if(!symbol_is_exported && !hash_record->next){
+                                // Add it to the end of the bucket.
+                                previous_to_add_to = &hash_record->next;
+                                break;
+                            }
+                        }
+                        
+                        if(!hash_record){
+                            assert(!previous_to_add_to);
+                            
+                            // We have never found a matching record.
+                            // Add this entry to the start of the bucket.
+                            previous_to_add_to = &global_symbol_index[hash_index];
+                        }
+                        
+                        if(previous_to_add_to){
+                            struct pdb_loaded_hash_record *new_hash_record = push_struct(&arena, struct pdb_loaded_hash_record);
+                            new_hash_record->next = *previous_to_add_to;
+                            new_hash_record->reference_counter = 1;
+                            new_hash_record->symbol_record = symbol_record_symbol;
+                            new_hash_record->symbol_name = symbol_name;
+                            
+                            *previous_to_add_to = new_hash_record;
+                            
+                            global_symbol_count++;
+                            
+                            should_add_a_global_reference = 1;
+                            hash_record = new_hash_record;
+                        }else{
+                            // Deallocate the symbol because we did not need it!
+                            // @cleanup: Maybe add an api for this!
+                            symbol_record_stream.allocated = (u8 *)symbol_record_symbol - symbol_record_stream.base;
+                        }
+                        
+                        
+                        if(should_add_a_global_reference){
+                            if(global_references_count == global_references_capacity){
+                                u64 new_global_references_capacity = global_references_capacity * 2;
+                                u32 *new_refences = push_array(&arena, u32, new_global_references_capacity);
+                                memcpy(new_refences, global_references, global_references_capacity * sizeof(*global_references));
+                                
+                                global_references = new_refences;
+                                global_references_capacity = new_global_references_capacity;
+                            }
+                            
+                            global_references[global_references_count++] = (u8 *)hash_record->symbol_record - symbol_record_stream.base;
                         }
                     }
                     
@@ -1546,7 +1643,9 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
         
         u64 lines_size = arena_current(&module_symbol_stream) - lines_start;
         
-        *push_struct(&module_symbol_stream, u32) = 0; // @incomplete: amount_of_global_references
+        *push_struct(&module_symbol_stream, u32) = global_references_count * sizeof(global_references[0]);
+        u32 *global_references_copy = push_array(&module_symbol_stream, u32, global_references_count);
+        memcpy(global_references_copy, global_references, global_references_count * sizeof(global_references_copy[0]));
         
         streams[PDB_STREAM_module_symbol_stream_base + object_file_index].size = arena_current(&module_symbol_stream) - streams[PDB_STREAM_module_symbol_stream_base + object_file_index].data;
         
@@ -1561,6 +1660,48 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
         }
     }
     
+    
+    struct memory_arena gsi_stream = create_memory_arena(giga_bytes(8));
+    {
+        
+        *push_struct(&gsi_stream, u32) = /*version_signature*/(u32)-1;
+        *push_struct(&gsi_stream, u32) = /*version*/0xeffe0000 + 19990810;
+        
+        // @cleanup: Document Is this size global_symbol_count * 12 or global_symbol_count * 8;
+        *push_struct(&gsi_stream, u32) = /*hash_record_byte_size*/global_symbol_count * 8;
+        u32 *bucket_information_byte_size = push_struct(&gsi_stream, u32);
+        
+        struct pdb_hash_record{
+            u32 offset_in_symbol_record_stream_plus_one;
+            u32 reference_counter;
+        } *hash_records = push_array(&gsi_stream, struct pdb_hash_record, global_symbol_count);
+        
+        u32 *bucket_present_bitmap = push_array(&gsi_stream, u32, (array_count(global_symbol_index)/32) + 1);
+        
+        u32 current_record_index = 0;
+        for(u32 bucket_index = 0; bucket_index < array_count(global_symbol_index); bucket_index++){
+            
+            struct pdb_loaded_hash_record *record = global_symbol_index[bucket_index];
+            
+            if(record){
+                u32 bitmap_index = (bucket_index / 32);
+                u32 bit_index    = (bucket_index % 32);
+                
+                bucket_present_bitmap[bitmap_index] |= (1u << bit_index);
+                
+                u32 *hash_record_offset = push_struct(&gsi_stream, u32);
+                *hash_record_offset = current_record_index * 12; // This * 12 comes form the weird offset fixup they do.
+            }
+            
+            for(; record; record = record->next){
+                struct pdb_hash_record *serialized_record = &hash_records[current_record_index++];
+                serialized_record->offset_in_symbol_record_stream_plus_one = ((u8 *)record->symbol_record - symbol_record_stream.base) + 1;
+                serialized_record->reference_counter = record->reference_counter;
+            }
+        }
+        
+        *bucket_information_byte_size = (u32)(arena_current(&gsi_stream) - (u8 *)bucket_present_bitmap);
+    }
     
     struct memory_arena dbi_stream = create_memory_arena(giga_bytes(8));
     {
@@ -1608,7 +1749,7 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
         dbi_stream_header->version = 19990903;
         dbi_stream_header->age = 1;
         
-        dbi_stream_header->stream_index_of_the_global_symbol_index_stream = (u16)-1;
+        dbi_stream_header->stream_index_of_the_global_symbol_index_stream = PDB_STREAM_global_symbol_index;
         dbi_stream_header->stream_index_of_the_public_symbol_index_stream = (u16)-1;
         dbi_stream_header->stream_index_of_the_symbol_record_stream = PDB_STREAM_symbol_record;
         
@@ -1922,6 +2063,10 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
     
     streams[PDB_STREAM_symbol_record].data = symbol_record_stream.base;
     streams[PDB_STREAM_symbol_record].size = arena_current(&symbol_record_stream) - symbol_record_stream.base;
+    
+    streams[PDB_STREAM_global_symbol_index].data = gsi_stream.base;
+    streams[PDB_STREAM_global_symbol_index].size = arena_current(&gsi_stream) - gsi_stream.base;
+    
     
     // @note: The 0-th stream is added by the write_msf function implicitly.
     write_msf("a.pdb", streams + 1, amount_of_streams - 1);
