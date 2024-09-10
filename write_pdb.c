@@ -1420,6 +1420,7 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
                         struct codeview_symbol_header *symbol_record_symbol = push_array(&symbol_record_stream, struct codeview_symbol_header, 0);
                         int symbol_is_exported = 0;
                         int should_add_a_global_reference = 0;
+                        int symbol_is_udt_or_constant = 0;
                         
                         if(symbol_header->kind == /*S_GPROC32*/0x1110 || symbol_header->kind == /*S_LPROC32*/0x110f){
                             symbol_is_exported = (symbol_header->kind == /*S_GPROC32*/0x1110);
@@ -1459,6 +1460,8 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
                                 padding[index] = 0xf0 + (alignment - index);
                             }
                         }else if(symbol_header->kind == /*S_UDT*/0x1108 || symbol_header->kind == /*S_CONSTANT*/0x1107){
+                            symbol_is_udt_or_constant = 1;
+                            
                             // For now just copy out the symbol, later we have to handle conflicts.
                             u8 *dest = push_array(&symbol_record_stream, u8, sizeof(*symbol_header) + symbol_size + alignment);
                             memcpy(dest, symbol_header, symbol_size + sizeof(*symbol_header));
@@ -1495,6 +1498,15 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
                                     previous_to_add_to = &global_symbol_index[hash_index];
                                     break;
                                 }
+                                
+                                if(symbol_is_udt_or_constant){
+                                    // For UDTs and Constants that have a global symbol already,
+                                    // but the global symbol mismatches the UDT or Constant,
+                                    // we skip putting them into the symbol record stream
+                                    // and instead copy them to the module symbol stream.
+                                    skip_copy_out = 0;
+                                    break; // (this will skip any symbol record stuff, as `previous_to_add_to == 0` and `hash_record != 0`)
+                                }
                             }
                             
                             if(!symbol_is_exported && !hash_record->next){
@@ -1530,7 +1542,6 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
                             // @cleanup: Maybe add an api for this!
                             symbol_record_stream.allocated = (u8 *)symbol_record_symbol - symbol_record_stream.base;
                         }
-                        
                         
                         if(should_add_a_global_reference){
                             if(global_references_count == global_references_capacity){
@@ -1784,7 +1795,10 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
         dbi_stream_header->version_number_of_mspdb_dll_which_build_the_pdb = 30151;
         dbi_stream_header->build_number_of_mspdb_dll_which_build_the_pdb   = 0;
         
-        // Should we set `dbi_stream_header->flags.the_pdb_allows_conflicting_types`?
+        // @note: I think the simplyfied way we handle `S_UDT` is more inline to the
+        //        `/DEBUG:CTypes` case.
+        dbi_stream_header->flags.the_pdb_allows_conflicting_types = 1;
+        
         dbi_stream_header->machine_type = /*CV_CFL_AMD64*/0xd0;
         
         struct pdb_module_information{
