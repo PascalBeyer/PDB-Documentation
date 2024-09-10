@@ -671,6 +671,17 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
                 // from the object file local ones to the pdb ones.
                 // 
                 
+                
+                struct{
+                    struct codeview_type_record_header type_record_header;
+                    u32 type_index;
+                    u32 src_file_string_id;
+                    u32 line_number;
+                    u16 module;
+                    u8  f1;
+                    u8  f0;
+                } udt_mod_src_line_record_stack_space;
+                
 #define remap_type_index(v) (v) = ((v) < 0x1000 ? (v) : ((v >= object_file_type_index) ? 0 : object_file_type_index_to_pdb_file_type_index_map[(v)-0x1000]))
                 
                 switch(type_record_header.kind){
@@ -892,9 +903,6 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
                     }break;
                     
                     case /*LF_UDT_SRC_LINE*/0x1606:{
-                        
-                        // @incomplete: we are supposed to make this into a LF_UDT_MOD_SRC_LINE entry.
-                        
                         struct {
                             u32 type_index;
                             u32 src_file_string_id;
@@ -905,6 +913,24 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
                         
                         remap_type_index(udt_src_line->type_index);
                         remap_type_index(udt_src_line->src_file_string_id);
+                        
+                        // @hack: We need change this `LF_UDT_SRC_LINE` to a `LF_UDT_MOD_SRC_LINE`,
+                        //        but in this loop, we are expected to use the `record_data` to get 
+                        //        to the symbol, which is inside the `symbol_information` so we cannot patch it.
+                        //        Hence, we use some stack memory and copy the symbol to said stack memory.
+                        
+                        udt_mod_src_line_record_stack_space.type_record_header.kind   = /*LF_UDT_MOD_SRC_LINE*/0x1607;
+                        udt_mod_src_line_record_stack_space.type_record_header.length = sizeof(udt_mod_src_line_record_stack_space) - sizeof(udt_mod_src_line_record_stack_space.type_record_header.length);
+                        
+                        udt_mod_src_line_record_stack_space.type_index         = udt_src_line->type_index;
+                        udt_mod_src_line_record_stack_space.src_file_string_id = udt_src_line->src_file_string_id;
+                        udt_mod_src_line_record_stack_space.line_number        = udt_src_line->line_number;
+                        udt_mod_src_line_record_stack_space.module = (object_file_index + 1); // @cleanup: Do I talk about this +1 in my documentation?
+                        udt_mod_src_line_record_stack_space.f1 = 0xf1;
+                        udt_mod_src_line_record_stack_space.f0 = 0xf0;
+                        
+                        record_data = (u8 *)(&udt_mod_src_line_record_stack_space.type_record_header + 1);
+                        record_size = sizeof(udt_mod_src_line_record_stack_space) - sizeof(udt_mod_src_line_record_stack_space.type_record_header);
                     }break;
                     
                     default:{
@@ -1104,8 +1130,6 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
         struct stream symbol_information = write_pdb_information->per_object[object_file_index].symbol_information;
         
         streams[PDB_STREAM_module_symbol_stream_base + object_file_index].data = arena_current(&module_symbol_stream);
-        
-        print("\n%s:\n", write_pdb_information->per_object[object_file_index].file_name);
         
         u32 signature;
         if(stream_read(&symbol_information, &signature, sizeof(signature)) || signature != /*CV_SIGNATURE_C13*/4) continue;
