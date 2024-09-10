@@ -289,7 +289,7 @@ struct __declspec(packed) coff_symbol {
     };
     
     u32 value;
-    s16 section_number;
+    u16 section_number;
     u16 symbol_type;
     u8 storage_class;
     u8 number_of_auxiliary_symbol_records;
@@ -832,6 +832,10 @@ int main(int argc, char *argv[]){
                 name_length = strnlen(name, sizeof(symbol->short_name));
             }
             
+            if(symbol->section_number > object_file->number_of_sections){
+                print("Error: Object file '%s' has symbol '%.*s' with invalid section number.\n", object_file->file_name, name_length, name);
+                return 1;
+            }
             u32 is_defined = symbol->section_number != 0;
             u32 size = is_defined ? 0 : symbol->value;
             
