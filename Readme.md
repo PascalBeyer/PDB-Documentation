@@ -1,33 +1,36 @@
 
 # Program Database Format (.pdb)
+
 The Program Database Format is the debugging symbol (container) format used by debuggers on Windows.
 It contains type, symbol, file and line information for an executable file.
 Though this makes the format arguably very important, it remains largely undocumented.
 The best sources of documentation are
+
    * The cryptic [source code](https://github.com/microsoft/microsoft-pdb) for `mspdbcore.dll`, which was published by Microsoft, 
-     which they claimed they would keep up to date and then never updated.
+     which they claimed they would keep up to date, then never updated and is now archived.
    * The LLVM-implementation and [wiki articles](https://llvm.org/docs/PDB/), which while they are really good, they are incomplete
      and contains some minor mistakes.
    * Random implementations like [pdb_raw](https://github.com/MolecularMatters/raw_pdb), 
-     [dump_syms](https://github.com/mozilla/dump_syms/tree/main/src/windows) or 
-     [willglynn/pdb](https://github.com/willglynn/pdb).
+     [dump_syms](https://github.com/mozilla/dump_syms/tree/main/src/windows),
+     [willglynn/pdb](https://github.com/willglynn/pdb) or the [raddebugger](https://github.com/EpicGamesExt/raddebugger/).
+     
 Microsoft also published the [DIA SDK](https://learn.microsoft.com/en-us/visualstudio/debugger/debug-interface-access/debug-interface-access-sdk?view=vs-2022)
 or Debug Interface Access SDK, which is for example used by [x64dbg](https://github.com/x64dbg/x64dbg).
 Furthermore, the sample program for the DIA SDK is a dumping utility called `Dia2Dump` and the `microsoft-pdb` 
 repository also contains a dumping utility called `cvdump`.
 
-Armed with these sources, the plan for this repository is to provide technical documentation, and a validation utility, to
-hopefully provide a complete picture of the PDB format.
+Armed with these sources, the plan for this repository is to provide technical documentation, a validation utility (`validate.c`) and
+a toy-linker (`linker.c`) with PDB support (`pdb_writer.c`) to hopefully provide a complete picture of the PDB format.
 
 Note that all information in this repository is from XX.XX.XXXX and is might change when Microsoft updates their tools.
 For reference, the MSVC version I am using is 19.28.29336.
 
-## WARNING:
-
-Any sample code inside this document is only intended to clarify the layout and algorithms used.
-No security checks are performed and the code might not even have been tested. 
+Any sample code inside the `Readme.md` is only intended to clarify the layout and algorithms used.
+No security checks are performed and the code might not even have been tested.
+For "tested" parsing code see `validate.c` and for tested writer code see `write_pdb.c`.
 
 # How are PDBs used?
+
 PDBs are used by debuggers for type, symbol, file and line information. 
 They are produced or incrementally updated by the linker.
 
@@ -51,26 +54,29 @@ section of the executable (usually not its own section but contained in the `.rd
 ```
 
 This sections can contain various forms of debugging information, but the one we are interested in is `IMAGE_DEBUG_TYPE_CODEVIEW` or `cv` in the table.
-It contains a `RSDS` structure, which to my knowledge in only documented in [locator.h](https://github.com/microsoft/microsoft-pdb/blob/082c5290e5aff028ae84e43affa8be717aa7af73/PDB/dbi/locator.h)
+It contains a `RSDS` structure, which to my knowledge in only documented in [locator.h](https://github.com/microsoft/microsoft-pdb/blob/082c5290e5aff028ae84e43affa8be717aa7af73/PDB/dbi/locator.h#L33)
 of the microsoft-pdb repository.
 The structure looks as follows:
 
 ```c
-struct _RSDS_DEBUG_DIRECTORY{
-   char RSDS[4]; // "RSDS"
-   GUID pdb_guid;
-   u32  pdb_age;
-   char pdb_path[];
+struct RSDSI                       // RSDS debug info
+{
+    DWORD   dwSig;                 // RSDS
+    GUID    guidSig;
+    DWORD   age;
+    char    szPdb[_MAX_PATH * 3];
 };
 ```
-The [GUID](https://learn.microsoft.com/en-us/windows/win32/api/guiddef/ns-guiddef-guid) is a unique _number_ which 
-is used to match the PDB to the EXE and the age is used for incremental linking. Here, on a incremental relink, 
-the GUID stays the same, but the age is incremented.
-Finally, the `pdb_path` is the full path to the PDB. All this information is also displayed by `dumpbin`.
 
-For most Microsoft executables the `pdb_path` stored, is simply the name of the PDB, for example:
+The [GUID](https://learn.microsoft.com/en-us/windows/win32/api/guiddef/ns-guiddef-guid) is a unique _number_ which 
+is used to match the PDB to the EXE and the `age` is used for incremental linking. Here, on a incremental relink, 
+the GUID stays the same, but the age is incremented.
+Finally, the `szPdb` is the zero-terminated path to the PDB. Per default, MSVC uses the full path of the PDB for `szPdb`, but a alternate PDB path can be specified using the liker option [`/PDBALTPATH`](https://learn.microsoft.com/en-us/cpp/build/reference/pdbaltpath-use-alternate-pdb-path?view=msvc-170). 
+All this information is also displayed by `dumpbin`.
+
+For most Microsoft executables the `szPdb` stored, is simply the name of the PDB, for example:
 ```
-C:\Windows\System32> dumpbin notepad.exe
+C:\Windows\System32>dumpbin notepad.exe
   <...>
 
   Debug Directories
@@ -86,26 +92,26 @@ C:\Windows\System32> dumpbin notepad.exe
 The debugger can then download the PDB from the [Microsoft public symbol server](https://learn.microsoft.com/en-us/windows-hardware/drivers/debugger/microsoft-public-symbols).
 This simply means downloading the PDB from `https://msdl.microsoft.com/download/symbols/<pdb-name>/<guid><age>/<pdb-name>`.
 In the case of `notepad.pdb` this would be `https://msdl.microsoft.com/download/symbols/notepad.pdb/67D551E7B9BB3B68E823F5B998BD94531/notepad.pdb`.
-Per default Microsoft tools like WinDbg then store the PDB under `C:\ProgramData\dbg\sym\<pdb-name>\<guid><age>\<pdb-name>`.
+Per default, Microsoft tools like WinDbg then store the PDB under `C:\ProgramData\dbg\sym\<pdb-name>\<guid><age>\<pdb-name>`.
 
-WinDbg then uses the [DbgHelp](https://learn.microsoft.com/en-us/windows/win32/debug/dbghelp-functions) API to parse the pdb.
-As mentioned before, x64dbg used the DIA SDK. LLDB parses the PDB directly.
+WinDbg then uses the [DbgHelp](https://learn.microsoft.com/en-us/windows/win32/debug/dbghelp-functions) API to parse the PDB.
+As mentioned before, [x64dbg](https://github.com/x64dbg/x64dbg/tree/development/src/dbg/msdia) uses the DIA SDK. LLDB and the raddebugger parse the PDB directly.
 
 To understand the PDB format, one has to understand three different concepts:
 
-1) The Multistream File Format
+1) [The Multistream File Format](#multistream-file--msf-)
 
    This format determines the overall shape of the PDB. It more or less is a file system inside of a file.
    It partitions the PDB into so-called _streams_ (think files) which consists of non-contiguous pages (think sectors),
-   which are given by a stream table stream (think $MFT).
+   which are given by a stream table stream (think File Allocation Table).
    
-2) The PDB stream layout
+2) [The PDB stream layout](#pdb-format)
 
    There are a bunch of PDB specific streams. Some contain debugging information, 
    some information about the PDB itself, and some other speedup structures for incremental linking.
    We will go in detail over every single stream in the `PDB-Format` section.
 
-3) CodeView
+3) [CodeView](#codeview)
 
    CodeView is the Windows debugging information format. It encompasses type information, symbol information, 
    file and line number information. This information is produced by the compiler on a per compilation unit bases
@@ -118,28 +124,29 @@ We will go into detail about each of these three concepts in the next sections.
 The Multistream File Format determines the on disk layout of the PDB. The best source of documentation is the 
 [LLVM-wiki article](https://llvm.org/docs/PDB/MsfFile.html) which is based on the [implementation](https://github.com/microsoft/microsoft-pdb/blob/082c5290e5aff028ae84e43affa8be717aa7af73/PDB/msf/msf.cpp) release by Microsoft.
 
-There are two versions of the MSF format, an older one refered to as _SmallMsf_ and the current one (from '99) 
-refered to as _BigMsf_. We only document the _BigMsf_ file format here.
+There are two versions of the MSF format, an older one referred to as _SmallMsf_ and the current one (from 1999) 
+referred to as _BigMsf_. We only document the _BigMsf_ file format here.
 
 The MSF considers the file as an array of _pages_, the first page is reserved for the file header.
 The page size is determined from the header.
 All pages with index 1 modulo the page size are reserved for the first _Free Page Map_.
 All pages with index 2 modulo the page size are reserved for the second _Free Page Map_.
-For example if the page size is `0x1000` (as it usually is), then the first Free Page Map would consist of the 
+For example, if the page size is `0x1000` (as it usually is), then the first Free Page Map would consist of the 
 pages `1, 0x1001, 0x2001, 0x3001, ...` and the second Free Page Map would consist of the pages `2, 0x1002, 0x2002, 0x3002, ...`.
 
 Only one of the two free page maps is active at any given time. 
-The active Free Page Map holds one bit per page, indicating whether the page free or not. 
+The active Free Page Map holds one bit per page, indicating whether the page free or not. `1` meaning free, `0` meaning used.
 Note that as one page holds `0x8000` bits one could only allocate a new page for the Free Page Map every `8 * page size`
 pages, but due to backwards compatibility this behavior must remain.
 
+The header page (index 0) and the Free Page Map pages must be marked as allocated in the active free page map.
 All other (allocated) pages are assigned to be part of so-called _streams_. 
 This assignment is realized using a special stream called the _stream table stream_, which can be found from the information stored in the header.
 
-The motivation for this format is to provide a way to append, read and write these stream, without changing the original data.
-This is realized by allocating a new stream table stream (allowing for copy on write access) and using the _other_ Free Page Map.
+The motivation for this format is to provide a way to append, read and write these stream, without changing the current data.
+This is realized by allocating a new stream table stream (allowing for copy-on-write access) and using the _other_ Free Page Map.
 Now, if at any point we notice an error, we can just _forget_ we ever did anything. Else, at _commit_ time, the 
-stream table streams and the Free Page Map are atomically swapped.
+stream table streams and the Free Page Map are "atomically" swapped changing the meaning of the MSF.
 
 ## MSF file header
 
@@ -157,7 +164,7 @@ struct msf_header{
 ```
 * `signature`
 
-  The signature for a MSF formatted file is `"Microsoft C/C++ MSF 7.00\r\n\x1a\x44\x53"`.
+  The signature for a MSF formatted file is `"Microsoft C/C++ MSF 7.00\r\n\032DS\0\0\0"`.
 
 * `page_size`
    
@@ -166,8 +173,8 @@ struct msf_header{
   
 * `active_free_page_map`
 
-   The free page map which was last in use. This value should only ever be one or two. Meaning either the 
-   first or second Free Page Map is active. 
+   The currently active Free Page Map. This value should only ever be one or two. Meaning either the 
+   first (pages `1`, `0x1001`, `0x2001`, ...) or second Free Page Map (pages `2`, `0x1002`, `0x2002`, ...) is active. 
    
 * `amount_of_pages`
    
@@ -219,16 +226,16 @@ stream_four_pages  = {};     // Empty streams have no pages
 stream_five_pages  = {5, 6}; // Even though the second page has only one
                              // byte used, it is still allocated
 ```
-Also note that in this example page 7 is not used and would be marked in the Free Page Map.
+Also note that in this example page 7 is not used and would be marked in the Free Page Map (unless it is used by the stream table stream or the stream table stream page list).
 
 ## Old Stream Table Stream
 
-One final quirk of the MSF format is the _Old Stream Table Stream_. This stream is at the fixed stream index 0.
+One final quirk of the MSF format is the _Old Stream Table Stream_. This stream is at the fixed stream index `0`.
 As the name implies, this stream contains an old (unused) stream table stream. 
-This is because, when committing changes and thus changing the stream table stream, the old stream table stream 
-still needs to be valid, and thus allocated in the Free Page Map. 
-To avoid having pages allocated in the Free Page Map, but not assigned to any stream, during commit the old (still active) 
-stream table stream is written old stream table stream.
+At parse time, the current Stream Table Stream (parsed from the header) is written to the old directory stream (at stream index `0`).
+At commit time, after (potentially) changing the current Stream Table Stream, the old one is freed in the Free Page Map.
+Hence, when parsing the PDB, the pages "allocated" to the Old Stream Table Stream are not marked as allocated in the active Free Page Map.
+
 
 # PDB-Format
 
@@ -237,12 +244,12 @@ The best sources are
 * The [LLVM-Wiki](). While it is somewhat incomplete and contains some minor mistakes, this is by far the best documentation for the PDB format.
 * The [microsoft-pdb]() repository. While the source code is fairly cryptic, somewhat dated and contains barely any comments, 
   it provides a good _ground truth_, when you are already sort of know what is going on.
-* The [LLVM implementation](). Notably, XXX, XXX and XXX.
+* The [LLVM implementation](). Notably, [lld/COFF/PDB.cpp](https://github.com/llvm/llvm-project/blob/main/lld/COFF/PDB.cpp), [llvm/lib/DebugInfo/PDB/PDB.cpp](https://github.com/llvm/llvm-project/blob/main/llvm/lib/DebugInfo/PDB/PDB.cpp) and [lldb/source/Plugins/SymbolFile/NativePDB/SymbolFileNativePDB.cpp](https://github.com/llvm/llvm-project/blob/main/lldb/source/Plugins/SymbolFile/NativePDB/SymbolFileNativePDB.cpp).
 * Finally, the [pdb](https://github.com/willglynn/pdb) repository by willglynn on github contains a lot good documentation in the form of comments.
 
 ## Overview
 
-Overall, one should look at the PDB format as a container format for Codeview, which contains speed up structures to enable incremental linking.
+Overall, one should look at the PDB format as a container format for CodeView, which contains speed up structures to enable incremental linking.
 The following is an overview over all _important_ streams.
 
 | stream name                | stream index                        | availability                                            | description | 
@@ -251,13 +258,13 @@ The following is an overview over all _important_ streams.
 | TPI Stream                 | Fixed index 2                       | Always present                                          | Contains CodeView Type Records. (This is the stream that contains the type information) | 
 | DBI Stream                 | Fixed index 3                       | Always present, can be empty for type servers           | Contains various information about the executable and how to relate address ranges to symbol information. | 
 | IPI Stream                 | Fixed index 4                       | Present based on PDB Information stream                 | Contains CodeView Id Records. | 
-| TPI hash stream            | Defined by TPI header               | Present based on TPI header                             | Contains hashes for all type records, as well as a speed up structure to lookup records by type_index. |
-| IPI hash stream            | Defined by IPI header               | Present based on IPI header                             | Contains hashes for all ID records, as well as a speed up structure to lookup records by id_index. |
+| TPI hash stream            | Defined by TPI header               | Present based on TPI header                             | Contains hashes for all type records, as well as speed up structures to lookup type records by type index and vice versa. |
+| IPI hash stream            | Defined by IPI header               | Present based on IPI header                             | Contains hashes for all ID records, as well as speed up structures to lookup ID records by id index and vice versa. |
 | Module symbol stream       | Defined in DBI stream               | Usually one for each module                             | Contains symbol and line information for the module (compilation unit). |
-| Symbol record stream       | Defined by DBI stream header        | Present based on DBI header                             | Contains references to all symbols defined in the individual modules, as well as "public symbols". | 
-| Global symbol index stream | Defined by the DBI header           | Present based on DBI header                             | Contains a speedup structure to lookup symbols by name. | 
-| Public symbol index stream | Defined by the DBI header           | Present based on DBI header                             | Contains a speedup structure to lookup public symbols by name or address. Also contains information about the incremental linking table. | 
-| /names                     | Defined in the _named stream table_ | Technically optional, but required for line information | A global string table. This allows for specifying string by index instead of redundantly storing them everywhere. | 
+| Symbol record stream       | Defined by DBI stream header        | Present based on DBI header                             | Contains references to all global symbols defined in the individual modules, as well as "public symbols". | 
+| Global symbol index stream | Defined by the DBI header           | Present based on DBI header                             | Contains a speedup structure to lookup symbols in the symbol record stream by name. Only global symbols "hit" by the global symbol stream are valid. | 
+| Public symbol index stream | Defined by the DBI header           | Present based on DBI header                             | Contains a speedup structure to lookup public symbols by name or address. Also contains information about the incremental linking table inside the exe. | 
+| /names                     | Defined in the _named stream table_ | Technically optional, but required for line information | A global string table. This allows for specifying strings by index instead of redundantly storing them everywhere. | 
 | Section Header Dump Stream | Defined in DBI stream               | Technically optional, but always observed               | Contains a copy of the section headers of the executable. This is used to resolve section:offset addresses to relative virtual addresses. |
 
 ## PDB Information stream
@@ -288,8 +295,8 @@ Known named streams are
 
 | stream name         | description                                                                           | 
 |---------------------|---------------------------------------------------------------------------------------|
-| "/names"            | A file global string pool,  mostly used for file names.                               |
-| "/LinkInfo"         | Optionally contains a `LinkInfo` structure.                                           | 
+| "/names"            | A file global string pool, mostly used for file names.                               |
+| "/LinkInfo"         | Optionally, contains a `LinkInfo` structure.                                           | 
 | "/src/headerblock"  | Contains information about .natvis files contained in the PDB.  These files are also named streams. | 
 | "/TMCache"          | A relatively new stream, which contains a cache for the type maps defined in [tm.h](https://github.com/microsoft/microsoft-pdb/blob/master/PDB/dbi/tm.h) |
 | "/UDTSRCLINEUNDONE" | This stream is sometimes present but its meaning is unknown and it seems to be empty. | 
@@ -315,7 +322,7 @@ Where `bit_array` has the following layout:
         u32 words[word_count];
     };
 ```
-Importantly, after the string table, the rest of the stream does not have any defined alignment anymore.
+**Importantly**, after the string table, the rest of the stream does not have any defined alignment anymore.
 
 A `key` for the named stream table is an offset into the `string_buffer`. 
 A `value` is the stream index, for the stream of that name.
@@ -343,7 +350,7 @@ The string hash function is derived from a common hash function used throughout 
 
 ```c
 // For reference see `HashPbCb` in `microsoft-pdb/PDB/include/misc.h`.
-u16 pdb_hash_index(u8 *bytes, size_t size, u32 modulus){
+u32 pdb_hash_index(u8 *bytes, size_t size, u32 modulus){
     u32 hash = 0;
     
     // Xor the bytes by dword lanes.
@@ -363,16 +370,14 @@ u16 pdb_hash_index(u8 *bytes, size_t size, u32 modulus){
     hash ^= (hash >> 16);
     
     // Take the modulus and return the hash.
-    return (u16)(hash % modulus);
+    return (hash % modulus);
 }
-```
-It will become important later (in a different hash table), that the modulus is computed in 32-bit, while the returned hash is 16-bit.
-The string hash [`hashSz`](https://github.com/microsoft/microsoft-pdb/blob/082c5290e5aff028ae84e43affa8be717aa7af73/PDB/include/misc.h#L86) is now:
-```c
+
 u16 hash_string(char *string){
-    return pdb_hash_index(string, strlen(string), (u32)-1);
+    return (u16)pdb_hash_index(string, strlen(string), (u32)-1);
 }
 ```
+(See [`hashSz`](https://github.com/microsoft/microsoft-pdb/blob/082c5290e5aff028ae84e43affa8be717aa7af73/PDB/include/misc.h#L86))
 A modulus of `-1` does not change the value. Afterward, the index is computed as a modulus of the `hash` and the `capacity`, i.e
 ```c 
 u32 named_stream_table_get_index(struct named_stream_table *table, char *stream_name){
@@ -391,8 +396,8 @@ u32 named_stream_table_get_index(struct named_stream_table *table, char *stream_
             return table->entries[index].value;
         }
     }
+    return -1;
 }
-
 ```
 Finally, the `unused` value comes from the fact that this is "general purpose" template. If no specialized "index allocation function" is provided, 
 this value is used to generate a unique `value` for each inserted string. Here, the index allocation function allocates stream indices.
@@ -439,11 +444,11 @@ The signature of the string table is `0xEFFEEFFE`.
 In the [microsoft-pdb source files](https://github.com/microsoft/microsoft-pdb/blob/master/PDB/include/nmt.h),
 two different string hash functions are defined `LHashPbCb` and `LHashPbCbV2` and corresponding constants
 `verLongHash = 1`, and `verLongHashV2 = 2`. In practice only `verLongHash` is observed.
-The `LHashPbCb` is a version of `pdb_hash_index` which returns a u32 instead of truncating to a u16.
+The [`LHashPbCb`](https://github.com/microsoft/microsoft-pdb/blob/805655a28bd8198004be2ac27e6e0290121a5e89/PDB/include/misc.h#L77) is a version of `pdb_string_hash` which returns a u32 instead of truncating to a u16.
 
 * `string_buffer_size`, `string_buffer`
 
-The buffer holding the actual zero-terminated strings. The first string inside the string buffer always has to be the zero-sized string, 
+The buffer holds the actual zero-terminated strings. The first string inside the string buffer always has to be the zero-sized string, 
 as a zero offset is also used as an invalid offset in the hash table.
 Importantly, the size of the string buffer is not aligned, thus usually the rest of the stream is unaligned.
 
@@ -502,7 +507,7 @@ The base for the type indices. This value is usually `0x1000` as the first `0x10
 There should be `one_past_last_type_index - minimal_type_index` type records following the header, 
 occupying `byte_count_of_type_record_data_following_the_header` bytes.
 
-In this way, each type record is assigned a type index, which the codeview format uses to reference types.
+In this way, each type record is assigned a type index, which the CodeView format uses to reference types.
 Each type record starts out with a header:
 
 ```c
@@ -526,13 +531,7 @@ for(u32 offset = 0; offset < tpi->byte_count_of_type_record_data_following_the_h
 To interpret these type records see [`cvinfo.h`](https://github.com/microsoft/microsoft-pdb/blob/master/include/cvinfo.h) and 
 the CodeView section.
 
-An example of the type information for the structure 
-```c
-struct structure{
-    int member;
-};
-```
-would be:
+An example of the type information for the structure `struct structure{ int member; };` would be:
 
 ```
 0x1000 : Length = 18, Leaf = 0x1203 LF_FIELDLIST
@@ -552,7 +551,7 @@ struct structure{
     struct structure *next;
 };
 ```
-need a predeclaration:
+need a "FORWARD REF":
 
 ```
 0x1000 : Length = 30, Leaf = 0x1505 LF_STRUCTURE
@@ -577,7 +576,7 @@ For a more detailed description, see the _Type Index_ subsection of the CodeView
 
 * `stream_index_of_hash_stream`
 
-The index of the _TPI hash stream_, which contains speedup structures to search up type records.
+The index of the _TPI hash stream_, which contains speedup structures to search up type records by index and vice versa.
 All other members inside the `tpi_stream_header` structure describe speedup structures located inside the TPI hash stream.
 This index can be `(u16)-1`, in which case the TPI hash stream is not present.
 
@@ -594,7 +593,7 @@ This table is used to deduplicate type records during (incremental) linking and 
 
 The `hash_key_size` can be `2` or `4` but in practice is always `4`.
 Depending on the `hash_key_size` the `number_of_hash_buckets` is bounded to a specific range.
-For `hash_key_size == 4` the `number_of_hash_buckets` has to be in the range of `0x1000` and `0x40000`
+For `hash_key_size == 4` the `number_of_hash_buckets` has to be in the range of `0x1000` and `0x40000`.
 
 The `hash_table_index_buffer` contains a _hash table index_ for each type record. 
 Each of these indices has `hash_key_size`.
@@ -629,14 +628,15 @@ For compound types (`LF_CLASS`, `LF_STRUCTURE`, `LF_UNION`, `LF_INTERFACE`, `LF_
 which are not anonymous, the hash is simply the `pdb_string_hash` of the name. 
 For `LF_UDT_SRC_LINE` and `LF_UDT_MOD_SRC_LINE` the hash is the `pdb_string_hash` over the type_index.
 For all other type records the hash is a CRC32 over the entire type record.
-
+Also see the reimplementation (`tpi_hash_table_index_for_record`) inside `write_pdb.c`.
 
 * `index_offset_buffer_offset`, `index_offset_buffer_length`
 
-The _index offset buffer_ is an arrays of `struct { u32 type_index; u32 offset_in_tpi; }` located inside the tpi hash stream.
+The _index offset buffer_ is an arrays of `struct { u32 type_index; u32 type_record_offset; }` located inside the TPI hash stream.
 These entries are intended to speed up searching for type records by type index. 
 There is one entry for about every 8 KiB of type record data. 
 One can achieve a `O(log n)` lookup using a binary search by `type_index` followed by a linear search for at most 8 KiB of type record data.
+The `type_record_offset` is an offset in the type record data. To get the offset in the TPI stream one must add `tpi_stream_header->header_size`.
 
 * `udt_order_adjust_table_offset`, `udt_order_adjust_table_length`
 
@@ -664,7 +664,27 @@ struct {
 ```
 The original source code for this generic template can be found [here](https://github.com/microsoft/microsoft-pdb/blob/master/PDB/include/map.h).
 
-// @cleanup: loading code.
+To apply the adjustments, one can simply iterate then entries:
+```c
+for(u32 index = 0; index < amount_of_entries; index++){
+    u32 offset     = entires[index].key;
+    u32 type_index = entires[index].value;
+    
+    u32 hash_index = hash_indices[type_index - minimal_type_index];
+    
+    struct hash_bucket **prev = &buckets[hash_index];
+    struct hash_bucket *hash_bucket = buckets[hash_index];
+    
+    for(; hash_bucket; prev = &hash_bucket->&next, hash_bucket = hash_bucket->next){
+        if(hash_bucket->type_index == type_index) break;
+    }
+    
+    // Move 'hash_bucket' to the start of the list.
+    *prev = hash_bucket->next;
+    hash_bucket->next = buckets[hash_index];
+    buckets[hash_index] = hash_bucket;
+}
+```
 
 ## DBI Stream
 
@@ -701,7 +721,7 @@ struct dbi_stream_header{
     struct{
         u16 was_linked_incrementally         : 1;
         u16 private_symbols_were_stripped    : 1;
-        u16 the_pdb_allows_conflicting_types : 1;
+        u16 the_pdb_allows_conflicting_types : 1; // undocumented /DEBUG:CTYPES flag.
     } flags;
     
     u16 machine_type;
@@ -721,18 +741,19 @@ The current version of the DBI stream is `19990903`.
 
 The age of the DBI stream gets set to the age of the PDB whenever the DBI stream is written.
 
-* `stream_index_of_the_global_symbol_index_stream`, `stream_index_of_the_public_symbol_index_stream`, `stream_index_of_the_global_symbol_index_streamsymbol_record_stream`
+* `stream_index_of_the_global_symbol_index_stream`, `stream_index_of_the_public_symbol_index_stream`, `stream_index_of_the_global_symbol_index_stream`
 
 For these streams see later sections. These stream indices can technically be `-1` meaning they are not present, but they seem to be always present.
 
-* `toolchain_version`
-* `version_number_of_mspdb_dll_which_build_the_pdb`, `build_number_of_mspdb_dll_which_build_the_pdb`
-
-// @note: maybe warning that this is used. @cleanup: what do I mean by this? I think I read that in a clang comment?
+* `toolchain_version`,
+  `version_number_of_mspdb_dll_which_build_the_pdb`, `build_number_of_mspdb_dll_which_build_the_pdb`
 
 The version number of the `mspdbXXX.dll`, which build/rebuild this PDB last. `XXX` can be `core`, `st` or `140`.
 These four version numbers together make up the `product version`, which can be seen in the properties dialog for `mspdbXXX.dll`.
 Looks something like: `14.29.30151.0`
+
+[According to llvm](https://github.com/llvm/llvm-project/blob/95c0e03376a4699c38cd3e37a3b6fdad0549cd52/lld/COFF/PDB.cpp#L1666), there are known cases, where specifying the particular toolchain version matters.
+Hence, one should provide a version for compatibility.
 
 * `byte_size_of_the_*_substream`
 
@@ -760,7 +781,7 @@ Padding to 64 bytes for "future growth".
 
 ### Module Information Substream
 
-Immediately after the DBI header there is the _Module Information Substream_. 
+Immediately after the DBI header, there is the _Module Information Substream_. 
 It consists of an _array_ of variable length module structures.
 The index into this array determines the _module index_, which is referenced by other information later on.
 Each module structure has the following layout:
@@ -790,7 +811,7 @@ struct pdb_module_information{
     u32 edit_and_continue_pdb_file_string_index;
     
     char module_name_and_file_name[];
-}
+};
 ```
 * `unused`, `unused2`
 
@@ -838,13 +859,13 @@ The `edit_and_continue_source_file_string_index` is sometimes set by MASM for `.
 This member makes the `struct pdb_module_information` variable sized. 
 First there is a zero-terminated string which is the module name, then there a zero-terminated string which is the _file name_.
 If the module is a simple object file, then both string are just the full path of the object file.
-E.g `module_name = "C:\Path\to\object.obj"` and `file_name = "C:\Path\to\object.obj"`.
+E.g.: `module_name = "C:\Path\to\object.obj"` and `file_name = "C:\Path\to\object.obj"`.
 If the object file is part of an archive file (`.lib`), then the file name is the full path of the archive file and the module name is the name of the object.
-E.g `module_name = "object.obj"` and `file_name = "C:\Path\to\archive.lib"`.
+E.g.: `module_name = "object.obj"` and `file_name = "C:\Path\to\archive.lib"`.
 Note that the module name in this case is the module name specified in the archive, which can also be full path.
-For Microsoft archives we have:
-`module_name = "d:\agent\_work\63\s\Intermediate\vctools\libcmt.nativeprjr\amd64\exe_main.obj"` and 
-`file_name = "C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\VC\Tools\MSVC\14.28.29333\lib\x64\LIBCMT.lib"`
+For example for `LIBCMT.lib` we might have:
+* `module_name = "d:\agent\_work\63\s\Intermediate\vctools\libcmt.nativeprjr\amd64\exe_main.obj"` and 
+* `file_name = "C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\VC\Tools\MSVC\14.28.29333\lib\x64\LIBCMT.lib"`
 
 #### Special `* Linker *` module
 
@@ -852,12 +873,12 @@ The last module is the special `* Linker *` module. It works exactly like any ot
 special symbols which contain information about stuff the linker added. 
 The `first_section_contribution` tells you where to find the incremental linking table.
 The `edit_and_continue_pdb_file_string_index` is an index into the _Edit and Continue_ substream to the full path of the PDB.
-Also the module symbol stream of the `* LINKER *` module contains certain special symbol (like `S_SECTION`).
+Sometimes this stream might also be called differently, e.g: `* CIL *`.
 
 ### Section Contribution Substream
 
 The _Section Contribution Substream_ contains information on how to map offsets in the executable to module indices.
-It begins immediately after the _Module Information Substream_. It starts with a `u32` version followed by an array of either
+It begins immediately after the _Module Information Substream_ and starts with a `u32` version followed by an array of either
 ```c 
 struct pdb_section_contribution{
     s16 section_id;
@@ -906,7 +927,7 @@ struct pdb_section_map_stream_header{
     u16 number_of_logical_section_descriptors;
 };
 ```
-In practice both of these values are equal to one plus the section count.
+In practice, both of these values are equal to one plus the section count.
 The header is followed by an array of one plus the section count many entries with the following layout:
 ```c
 struct pdb_section_map_entry{
@@ -921,7 +942,7 @@ struct pdb_section_map_entry{
 };
 ```
 This table seems to be related to some older object format (Object Module Format used by DOS and 16-bit Windows). 
-In practice this table always seems to look as follows:
+In practice, this table always seems to look as follows:
 ```
 Sec  flags  ovl   grp   frm sname cname    offset    cbSeg
  01  010f  0000  0000  0001  ffff  ffff  00000000 00037864
@@ -956,7 +977,9 @@ It seems this array does not serve any purpose in the current version of the PDB
 ### Source Information Substream
 
 The _Source Information Substream_ contains the file name of files compiled for each module.
-It has the following layout
+In practice, this substream seems to be mostly unused as the C13 line information does not reference it.
+
+This substream has the following layout
 ```c
     u16 amount_of_modules;
     u16 truncated_amount_of_source_files;
@@ -974,7 +997,7 @@ Note that this includes the special `* Linker *` module.
 * `truncated_amount_of_source_files`
 
 This field used to represent the amount of source files which contributed to the executable.
-For large projects (projects which use more then 65535 source files) this value is truncated to a 16-bit value.
+For large projects (projects which use more then 65535 source files), this value is truncated to a 16-bit value.
 The actual amount of source files has to be computed by walking the `amount_of_source_files_per_module` array.
 
 * `source_file_base_index_per_module` 
@@ -998,7 +1021,7 @@ This array contains the amount of source files which contributed to each module.
 This array contains a u32-offset for each source file. This is used to deduplicate source files.
 If a header file is used several times in different modules (compilation units) it only appears once in the `string_buffer`.
 Each string is a full path.
-Note that for large the `amount_of_source_files` should not be obtained from the `truncated_amount_of_source_files` 
+Note that for large projects the `amount_of_source_files` should **not** be obtained from the `truncated_amount_of_source_files` 
 but rather by summing all entries in `amount_of_source_files_per_module`.
 
 * `string_buffer` 
@@ -1092,7 +1115,7 @@ This is an array of `u32`. This has something to do with `.NET`.
 
 * `pdata`, `xdata` 
 
-A copy of the `.pdata` and .xdata` sections of the executable.
+A copy of the `.pdata` and `.xdata` sections of the executable.
 These are present when specifying [/DEBUGTYPE:PDATA](https://learn.microsoft.com/en-us/cpp/build/reference/debugtype-debug-info-options?view=msvc-170#arguments).
 
 Both of these streams have the following header before the actual section data:
@@ -1125,7 +1148,7 @@ This stream is again, like the `OMAP`, related to binary patching and contains t
 
 The _IPI Stream_ contains id information. It has the exact same layout as the TPI stream, 
 but it differs in what CodeView records are contained within. While the TPI stream contains 
-type records like `LF_STRUCTURE`, the IPI stream contains "id" records `LF_FUNC_ID` or `LF_UDT_MOD_SRC_LINE` 
+type records like `LF_STRUCTURE`, the IPI stream contains "id" records `LF_FUNC_ID` or `LF_UDT_MOD_SRC_LINE`, 
 which tell you information about functions or user defined types. For more information see the CodeView section later on.
 
 ## Module Symbol Streams
@@ -1787,7 +1810,7 @@ typedef struct CONSTSYM {
 (See [here](https://github.com/microsoft/microsoft-pdb/blob/805655a28bd8198004be2ac27e6e0290121a5e89/include/cvinfo.h#L3257C1-L3263C12)).
 Numeric leaves are used to indicate `size`, `count` or `value` fields. They are at least 2 bytes, i.e a `u16` (unsigned short).
 If this `u16` does NOT have its top-most bit set, i.e `(numeric_leaf & 0x8000) == 0` the value is simply this `u16`.
-Otherwise, this it specifies which type of value comes after. [Here](https://github.com/microsoft/microsoft-pdb/blob/805655a28bd8198004be2ac27e6e0290121a5e89/include/cvinfo.h#L937) is a list of these values. 
+Otherwise, this specifies which type of value comes after. [Here](https://github.com/microsoft/microsoft-pdb/blob/805655a28bd8198004be2ac27e6e0290121a5e89/include/cvinfo.h#L937) is a list of these values. 
 For example:
 ```
 01 00                         -> Top bit not set -> value = 1
@@ -2117,177 +2140,5 @@ During linking (using /DEBUG:FULL), the linker then includes the type records in
 
 This is the _standard_ PDB. As we have already seen above, what information is provided to the linker,
 we can now try to understand what the linker does to this information and where it is saved.
-
-
-________________________________________________________________________________________________________________
-
-
-TODO:
-Invalid section contribution 
-
-// FASTLINK
-// CTYPES (?)
-// Stripped
-// typeserver
-
-make sure we are using 'segment' when talking about a section of an object file
-
-
-__guard_longjmp_count
-public_symbols with section_index = amount_of_sections
-
-
-# Program Database Format (.pdb)
-* Argubly very imporant, largely undocumented
-* Reading via dia, or mspdbcore.dll, cvdump.exe, diadump sample.
-* Microsoft publisched cryptic source code ("keept up to date")
-* Best documentation is from llvm, but incomplete and somewhat erronous
-* In this repository,... 
-* Hopefully both technical and motivational.
-
-# How are PDBs used?
-* Used by debuggers, incrementally updated by linkers.
-* Locate the RSDS debug directory entry.
-* Full path or symbol server, (local or microsoft)
-* Http links and file structure.
-* To parse windbg uses Dbghelp, x64dbg uses msdia, lldb parses the .pdb directly. As far as I know this is the only open source implementation.
-* To understand the .pdb file format one has to understand MSF, which paritions the file into "streams", the pdb format, or how these streams are used for a .pdb, and CodeView.
-* MSF, pretty good docu by llvm
-* CodeView -> Cvinfo.h, various dumpers, old .pdf
-* PDB, mspdbcore source code, llvm wiki, llvm source, some smaller projects pdb-raw, rust pdb crate, ...
-* Standpoint (c-compiler, debugger) focus on pdb, not Codeview
-
-# Multistream File Format (MSF)
-* Reference in microsoft-pdb, and llvm-wiki.
-* Determines the overall structure
-* Partitions the file into "streams" using "pages"
-* File system anology, MFT = Directory stream.
-* Free page maps to know which pages are unused
-* Technically: Superblock (file header), Directory stream pages, Directory stream.
-* Stream 0, old directory stream.
-* Free Page maps, weird quirk
-* Maybe structure: References, describtion, Tecnicallities
-
-# PDB-Format
-
-* Symbol container, incremental linking speedup structures.
-
-## Overview
-* Fixed Streams
-* Hash  Streams
-* Named Streams
-* Optional Header Streams
-* Module Symbol Streams
-* Symbol Stream
-* Index streams
-
-## PDB/Information stream
-
-## /names Stream
-
-## TPI Stream (Type Information)
-* Mention Symbol headers
-* tpi hash stream 
-
-## DBI Stream (Debug Information)
-* DBI-Header
-### Module Information Substream
-### Section Contribution Substream
-### Section Map Substream
-### File Information Substream
-### Type Server Substream
-### Edit and Continue Substream
-### Optional Debug Streams Header Substream
-
-* Mention Symbol headers
-* Mention whats in the linker Module
-
-## IPI Stream (Id Information)
-
-## Symbol Record Stream
-* Mention Symbol headers
-
-## Global Symbol Index (GSI) Stream
-
-## Public Symbol Index (PSGSI) Stream
-
-## Named Streams
-### /LinkInfo
-### /src/headerblock
-### /TMCache
-### /UDTSRCLINEUNDONE
-
-# Codeview
-## References, new Symbols
-## whats included in .Obj
-## Symbols by stream
-
-# Types of PDBs
-
-1. RSDS (Where, symbol server, http)
-2. MSF (file system comparison, streams, directory stream, free blockmaps)
-3. PDB (Overview: Fixed streams, named streams, symbol stream, hash streams, module streams, optional streams, then each stream in detail)
-4. CodeView (summary of each necessary symbol)
-5. Types of PDBs (full, fastlink, type server, stripped)
-6. Examples (linker, debugger, hexlang)
-__________________________________________________________________________________________________________________________
-
-It has four "fixed" streams, the _PDB information stream_, the TPI and IPI streams, which contain type and "ID" information and the DBI stream, 
-which tells you where to find streams which contain the symbol information.
-The symbol information stream consist of one _module symbol stream_ for each module, and a _symbol record stream_. 
-The _symbol record stream_ contains references to symbols in all module symbol record. 
-
- // @cleanup: id_index ? 
- 
- 
-  if (ppdb1->m_fMinimalDbgInfo) {
-            if (strcmp(szModule(), "* Linker *") == 0) {
-                // Write out input PDB mapping entries.
-
-                PDBMAP pm = {0, S_PDBMAP};
-
-                for (DWORD i = 0; i < ppdb1->m_rgPDBMapping.size(); i++) {
-                    wchar_t *szFrom = ppdb1->m_rgPDBMapping[i].szFrom;
-                    size_t cbFrom = sizeof(wchar_t) * (wcslen(szFrom) + 1);
-
-                    wchar_t *szTo = ppdb1->m_rgPDBMapping[i].szTo;
-                    size_t cbTo = sizeof(wchar_t) * (wcslen(szTo) + 1);
-
-                    pm.reclen = (unsigned short) (sizeof(PDBMAP) - sizeof(unsigned short) + cbFrom + cbTo);
-
-                    unsigned short cbPad = (unsigned short) dcbAlign(static_cast<size_t>(pm.reclen + sizeof(unsigned short)));
-
-                    pm.reclen += cbPad;
-
-                    if (!bufSyms.Append((PB) (&pm), (int) sizeof(PDBMAP)) ||
-                        !bufSyms.Append((PB) szFrom, (int) cbFrom) ||
-                        !bufSyms.Append((PB) szTo, (int) cbTo) ||
-                        !bufSyms.AppendFmt("f", (int) cbPad)) {
-                        return FALSE;
-                    }
-                }
-            }
-        }
-        
-        packsymtogs
-        packreftogs
-        
-        
-When adding Symbols it iterates over all of them and adds symbols to the symbol record stream.
-1) For every data it calls 'packSymToGs':
-   'packSymToGs' call 'gsi->packSym'. 'packSym' gets the symbol name and walks the hash table.
-   If the symbol is already in the hash table, nothing is done.
-   If the symbol we want to add is global it adds the new entry before any of the others.
-   If the symbol we want to add is not-global, we add it at the very end.
-   Adding is done by calling 'fInsertNewSym'.
-   This intern calls 'dbi->fAddSym' which actually copies the symbol to the 'bufSymRecs'.
-   
-2) For every Procedure and annotation it calls 'packRefToGs':
-   packRefToGs calls 'gsi->packRefSym' which creates a REFSYM2 structure (S_LPROCREF, S_PROCREF, S_DATAREF)
-   and then calls packSymToGs
-   
-TODO in GSI 
-1) order of hash records, which are contained?
-   
 
 
