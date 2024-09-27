@@ -3019,7 +3019,7 @@ void pdb_validate(u8 *pdb_base, size_t pdb_file_size, int dump){
         }
         
         // 
-        // @note: Apperantly, the 'DEBUG_S_FILECHKSMS' section can be after the first 'DEBUG_S_LINES' section.
+        // @note: Apparently, the 'DEBUG_S_FILECHKSMS' section can be after the first 'DEBUG_S_LINES' section.
         //        Thus, we first search for the 'DEBUG_S_FILECHKSMS' and then start over and validate the 'DEBUG_S_LINES' sections.
         // 
         
@@ -3244,6 +3244,8 @@ void pdb_validate(u8 *pdb_base, size_t pdb_file_size, int dump){
                         for(u32 line_index = 0, last_offset = 0; line_index < block_header.amount_of_lines; line_index++){
                             struct codeview_line *line = lines + line_index;
                             
+                            if(dump) print("            line: %u, delta: 0x%x, stmt: %u, offset: 0x%x (%s + 0x%x)\n", line->start_line_number, line->optional_delta_to_end, line->is_a_statement, line->offset, section, line_header.contribution_offset + line->offset);
+                            
                             if(line->start_line_number > 500000){
                                 error("Error: A line number > 500,000 (%u) was detected in the block at offset 0x%llx inside the DEBUG_S_LINES at (index %llu/offset 0x%llx) in the module symbol stream of module %s (index %u). This is considered invalid for the purposes of detecting bugs.", line->start_line_number, block_offset, subsection_index, subsection_start_offset, module_name, module_index);
                             }
@@ -3255,8 +3257,6 @@ void pdb_validate(u8 *pdb_base, size_t pdb_file_size, int dump){
                             if(last_offset > line->offset){
                                 error("Error: The lines inside the DEBUG_S_LINE blocks have to be sorted by offset. This was not true for the block at offset 0x%llx of the DEBUG_S_LINES at (index %llu/offset 0x%llx) in the module symbol stream of module %s (index %u).", block_offset, subsection_index, subsection_start_offset, module_name, module_index);
                             }
-                            
-                            if(dump) print("            line: %u, delta: 0x%x, stmt: %u, offset: 0x%x (%s + 0x%x)\n", line->start_line_number, line->optional_delta_to_end, line->is_a_statement, line->offset, section, line_header.contribution_offset + line->offset);
                             
                             last_offset = line->offset;
                         }
@@ -3308,7 +3308,7 @@ void pdb_validate(u8 *pdb_base, size_t pdb_file_size, int dump){
     
     // Symbol record stream:
     // 
-    // The symbol record stream consits of codeview records.
+    // The symbol record stream consists of codeview records.
     // Each of these records is either a 'S_PUB32' or a reference record,
     // which references a _private_ symbol in one of the module symbol record streams.
     // 
@@ -3637,7 +3637,7 @@ void pdb_validate(u8 *pdb_base, size_t pdb_file_size, int dump){
         // stream of all S_PUB32, ordered first by section, then by offset and lastly by name.
         // 
         // We make sure, that they are valid offsets and correctly sorted, and there is the 
-        // correct number of them. This implicitly checks that there is a 1:1 correspondance
+        // correct number of them. This implicitly checks that there is a 1:1 correspondence
         // between offsets in the map and `S_PUB32` records.
         // 
         
