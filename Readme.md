@@ -1,5 +1,5 @@
 
-# Program Database Format (.pdb)
+# Introduction
 
 The Program Database Format is the debugging symbol (container) format used by debuggers on Windows.
 It contains type, symbol, file and line information for an executable file.
@@ -21,15 +21,23 @@ repository also contains a dumping utility called `cvdump`.
 
 Armed with these sources, the plan for this repository is to provide technical documentation, a validation utility (`validate.c`) and
 a toy-linker (`linker.c`) with PDB support (`pdb_writer.c`) to hopefully provide a complete picture of the PDB format.
+The validation utility tries to check much about the PDB format and has a `-dump` option. The toy linker tries to be compatible with:
+```
+link.exe /NODEFAULTLIB /ENTRY:_start /SUBSYSTEM:console /DYNAMICBASE:no /DEBUG:FULL <.obj-files> <.lib-files>
+```
+for simple object files.
 
 Note that all information in this repository is from XX.XX.XXXX and is might change when Microsoft updates their tools.
 For reference, the MSVC version I am using is 19.28.29336.
 
 Any sample code inside the `Readme.md` is only intended to clarify the layout and algorithms used.
 No security checks are performed and the code might not even have been tested.
-For "tested" parsing code see `validate.c` and for tested writer code see `write_pdb.c`.
+For "tested" (but overly strict) parsing code see `validate.c` and for tested writer code see `write_pdb.c`.
 
-# How are PDBs used?
+
+# Content
+
+# Finding the PDB
 
 PDBs are used by debuggers for type, symbol, file and line information. 
 They are produced or incrementally updated by the linker.
@@ -525,7 +533,7 @@ for(u32 offset = 0; offset < tpi->byte_count_of_type_record_data_following_the_h
     
     printf("type_index %x, kind %x, length %x\n", type_index++, header->kind, header->length);
     
-    offset += header->length + sizeof(u16);
+    offset += header->length + sizeof(header->length);
 }
 ```
 To interpret these type records see [`cvinfo.h`](https://github.com/microsoft/microsoft-pdb/blob/master/include/cvinfo.h) and 
@@ -543,7 +551,7 @@ An example of the type information for the structure `struct structure{ int memb
 	Derivation list type 0x0000, VT shape type 0x0000
 	Size = 4, class name = structure, UDT(0x00001001)
 ```
-Printout produced by the [cvdump utility included in the microsoft-pdb repository](https://github.com/microsoft/microsoft-pdb/tree/master/cvdump).
+Printout produced by the [cvdump utility](https://github.com/microsoft/microsoft-pdb/tree/master/cvdump) included in the microsoft-pdb repository.
 
 Importantly, a type record can only refer (by type index) to earlier type records. This means that types which are self referential, e.g.:
 ```c
@@ -578,7 +586,7 @@ For a more detailed description, see the _Type Index_ subsection of the CodeView
 
 The index of the _TPI hash stream_, which contains speedup structures to search up type records by index and vice versa.
 All other members inside the `tpi_stream_header` structure describe speedup structures located inside the TPI hash stream.
-This index can be `(u16)-1`, in which case the TPI hash stream is not present.
+This index can in theory be `(u16)-1`, in which case the TPI hash stream is not present, but seems to be always present.
 
 * `stream_index_of_auxiliary_hash_stream`
 
@@ -1153,8 +1161,8 @@ which tell you information about functions or user defined types. For more infor
 
 ## Module Symbol Streams
 
-The _Module Symbol_ streams contain the private symbol information for each module. A _module_ is more or less a pseudonym for compilation unit ie. obj-file,
-but there also exists the special * LINKER * module. The information inside the module symbol stream comes in large part from the .debug$S section of the corresponding object file.
+The _Module Symbol_ streams contain the private symbol information for each module. A _module_ is more or less a pseudonym for compilation unit i.e. obj-file,
+but there also exists the special `* LINKER *` module. The information inside the module symbol stream comes in large part from the `.debug$S` section of the corresponding object file.
 The module symbol stream index for each module is contained in the 
 module information substream contained in the DBI stream. The layout of the module symbol stream is as follows:
 
@@ -1169,7 +1177,7 @@ where the `byte_size_of_*_information` members are also contained in the `pdb_mo
 
 ### Symbol Information
 
-The `symbol_information` starts out with the CodeView signature. The current codeview signature is `CV_SIGNATURE_C13` or `4`. 
+The `symbol_information` starts out with the `u32` CodeView signature. The current CodeView signature is `CV_SIGNATURE_C13` or `4`. 
 Afterwards, it consists of CodeView symbol records, each of which starts with a 4-byte header:
 ```c
 struct codeview_symbol_header{ // Also see SYMTYPE in cvinfo.h
@@ -1180,7 +1188,7 @@ struct codeview_symbol_header{ // Also see SYMTYPE in cvinfo.h
 The `length` field itself is not contained in the `length` of the record. 
 Each record should begin on a 4-byte boundary. The symbol kind is one of the [SYM_ENUM_e](https://github.com/microsoft/microsoft-pdb/blob/805655a28bd8198004be2ac27e6e0290121a5e89/include/cvinfo.h#L2735) 
 contained in `cvinfo.h`. 
-As described below, the global data symbols (`S_GDATA32` and `S_LDATA32`) are split between the global symbol stream (see below) and the module symbol streams.
+As described below, the global data symbols (`S_GDATA32` and `S_LDATA32`) are split between the symbol record stream (see below) and the module symbol streams.
 On the contrary the procedure records (`S_GPROC32` and `S_LPROC32`) are always contained in the module symbol stream.
 For more information see the CodeView section.
 
@@ -1191,19 +1199,19 @@ C11 line information is not present anymore. Therefore, we will only document C1
 The C13 line information consists of _subsections_. Each subsection start with the following 8-byte header:
 
 ```c
-struct codeview_line_subsection_header{
+struct codeview_subsection_header{
     u32 type;
     u32 length;
 };
 ```
 The type is one of [`DEBUG_S_SUBSECTION_TYPE`](https://github.com/microsoft/microsoft-pdb/blob/805655a28bd8198004be2ac27e6e0290121a5e89/include/cvinfo.h#L4576C23-L4576C23) most important ones being.
 `DEBUG_S_LINES` and `DEBUG_S_FILECHKSMS`, which contain the actual file and line information.
-Object files also contain a `DEBUG_S_STRINGTABLE` to contain the filenames, but inside the pdb these are merged into the /names stream.
+Object files also contain a `DEBUG_S_STRINGTABLE` to contain the filenames, but inside the PDB these are merged into the /names stream.
 There is only ever one `DEBUG_S_FILECHKSMS` subsection but there maybe many `DEBUG_S_LINES` subsections (in fact there is usually one per function). 
 
 The `DEBUG_S_FILECHKSMS` subsection contains an array of variable sized structures:
 ```c
-struct codeview_line_file_checksums{
+struct codeview_file_checksum{
     u32 offset_in_string_table;
     u8  checksum_size;
     u8  checksum_kind;
@@ -1232,8 +1240,8 @@ struct codeview_line_block_header{
     u32 block_size;
 };
 ```
-The `offset_in_file_checksums` is an offset in the `DEBUG_S_FILECHKSMS` subsection. WARNING: The `DEBUG_S_FILECHKSMS` subsection
-can occur after a `DEBUG_S_LINES` subsection.
+The `offset_in_file_checksums` is an offset in the `DEBUG_S_FILECHKSMS` subsection. 
+**WARNING:** The `DEBUG_S_FILECHKSMS` subsection can occur after a `DEBUG_S_LINES` subsection. Hence, when parsing, one first has to find the `DEBUG_S_FILECHKSMS` subsection, before being able to process the `DEBUG_S_LINES` subsection.
 
 Assuming the `CV_LINES_HAVE_COLUMNS` flag is not set, the block consists of 
 ```c
@@ -1248,14 +1256,15 @@ structures. The `offset` field is an offset inside the contribution described by
 The `optional_delta_to_end` is usually zero, but can be used to indicate the end of the code defined by the line.
 MSVC always sets the `is_a_statement` bit to `1`.
 
-In theory it seems one `DEBUG_S_LINES` is enough to cover each section of the executable, but in practice 
+In theory, it seems one `DEBUG_S_LINES` is enough to cover each section of the executable, but in practice 
 MSVC only emits one `codeview_line_block_header` per subsection and emits one `DEBUG_S_LINES` section per function.
 
 ### Global References
 
 The global references are an array of `u32`-offsets into the symbol record stream (see below),
-one for each global symbol used by this module. In this way, the pdb _remembers_ how the 
-reference counts inside the global symbol index stream (see below) came to be.
+one for each global symbol referenced by this module. In this way, the PDB _remembers_ how the 
+reference counts inside the global symbol index stream (see below) came to be. 
+On a relink of a compilation unit, the reference counts of the global symbols referenced by the compilation unit are decremented.
 
 @cleanup: talk about whats in the special * LINKER * module.
 
@@ -1271,6 +1280,10 @@ struct codeview_symbol_header{ // Also see SYMTYPE in cvinfo.h
 };
 ```
 All symbol records in the symbol record stream are produced by `link.exe`/`mspdbcode.dll` and are based on the symbols provided by the compiler in the object files.
+
+
+**WARNING:** Symbol records in the _Symbol Record Stream_ are **not** necessarily valid. 
+They should only be considered valid, if they are referenced by either the Global Symbol Index Stream (for non-`S_PUB32` symbols), or the Public Symbol Index Stream (for `S_PUB32` symbols).
 
 The symbol record stream contains one `S_PROCREF` or `S_LPROCEREF` for every procedure, a `S_GDATA32` or `S_LDATA32` 
 for global declarations, a `S_CONSTANT` for every named constant (enum or const expr) and a `S_UDT` for every typedef.
@@ -1293,7 +1306,7 @@ The other is contained in the module symbol stream of the module which declares 
 The code which produces the symbol records can be found [here](https://github.com/microsoft/microsoft-pdb/blob/0fe89a942f9a0f8e061213313e438884f4c9b876/PDB/dbi/mod.cpp#L2587).
 In cvinfo.h the symbol `S_DATAREF` is also defined, but seems to be unused at this point.
 
-*WARNING:* These reference symbols (`S_PROCREF`, `S_LPROCREF`, `S_ANNOTATIONREF`) use a one-based module index, instead of zero-based.
+**WARNING:** These reference symbols (`S_PROCREF`, `S_LPROCREF`, `S_ANNOTATIONREF`) use a one-based module id, instead of zero-based module index.
 
 ## Global Symbol Index Stream (GSI)
 
@@ -1406,7 +1419,7 @@ by `0x3ffff`, which changes the resulting hash index.
 The hash table contains a hash record for every non-`S_PUB32` symbol record in the symbol record stream.
 This is maybe unexpected based on the this being the _global_ symbol index stream, 
 but in this case the _global_ in this case is means in a C-way, where the global can be either static or exported, 
-and not in a linker-way, where global and local are usually used for exported, and internal linkage.
+and not in a linker-way, where global and local are usually used for external, and internal linkage.
 
 It is important to note, that `pdb_hash_index` is case invariant, i.e "asd" and "ASD" produce the same hash index 
 and thus the symbols would end up in the same bucket.
@@ -1421,11 +1434,11 @@ repository maintains this invariant by appending new static symbols, and prepend
 
 The _public symbol index_ or _PSI_ stream is somewhat similar to the global symbol index stream, 
 only that it only refers to `S_PUB32` symbols and contains some additional information.
-`S_PUB32` or _public symbols_ represent symbols in a way, the linker cares about, just names and addresses.
+`S_PUB32` or _public symbols_ represent symbols in a way the linker cares about, just names and addresses.
 They have the following layout:
 ```c
-struct pdb_public_symbol_record{
-    struct pdb_symbol_record_header header;
+struct codeview_public_symbol{
+    struct codeview_symbol_header header;
     u32 flags;
     u32 offset_in_section;
     u16 section_id;
@@ -1456,7 +1469,8 @@ There is one `S_PUB32` for every exported symbol as well as for special symbols 
 These records are important for incremental linking, but they are also present, when using `/INCREMENTAL:no`.
 Microsoft public symbol server PDBs (mostly) only contain these sort of symbol records.
 
-The public symbol index stream starts off with a header:
+### Layout
+The _Public Symbol Index Stream_ starts off with a header:
 ```c
 struct public_symbol_index_stream_header{
     u32 hash_table_information_bytes_size;
@@ -1473,23 +1487,52 @@ struct public_symbol_index_stream_header{
 ```
 * `hash_table_information_byte_size`
 
-Immediately following the header there is a variant of the global symbol index stream used to map symbol names to 
+Immediately following the header, there is a variant of the global symbol index stream used to map symbol names to 
 `S_PUB32`-symbol records. 
-As, during linking, it is not allowed for two exported symbols to have the same name. This table only holds one 
+As it is not allowed for two exported symbols to have the same name, this table only holds one 
 record for any given name.
 
 * `address_map_byte_size`
 
 The byte size of the _address map_. 
-The address map is an array of u32 `S_PUB32`-symbol record offsets, 
+The address map is an array of `u32`-offsets to `S_PUB32`-symbol records, 
 ordered first by section then by offset and lastly by name.
 
-This array can be used to binary search for a `S_PUB32` by address.
+This array can be used to binary search for a `S_PUB32` by address:
+
+```c
+u16 section_id = ???; // Section of the S_PUB32 we are searching for.
+u32 offset     = ???; // Offset in section of the S_PUB32 we are searching for.
+u32 *address_map = (u32 *)(public_symbol_index_stream.base + public_symbol_index_stream_header.hash_table_information_byte_size);
+
+int min = 0, max = public_symbol_index_stream_header.address_map_byte_size/sizeof(*address_map) - 1;
+
+int found = -1;
+
+while(min < max){
+    int mid = min + (max - min) / 2;
+    
+    struct codeview_public_symbol *public_symbol = (void *)(symbol_record_stream.data + /*C13 signature*/4 + address_map[mid]);
+    
+    if(section_id < public_symbol->section_id){
+        max = mid - 1;
+    }else if(section_id > public_symbol->section_id){
+        min = mid + 1;
+    }else if(offset < public_symbol->offset){
+        max = mid - 1;
+    }else if(offset > public_symbol->offset){
+        min = mid + 1;
+    }else{
+        found = mid;
+        break;
+    }
+}
+```
 
 
 * `number_of_thunks`, `thunk_byte_size`, `thunk_table_section_id`, `thunk_table_offset_in_section`
 
-These members describe the incremental linking table. The incremental linking table is usually located at the beginning of the text section and looks as follows:
+These members describe the incremental linking table. The incremental linking table is usually located at the beginning of the `.text` section and looks as follows:
 
 ```
 @ILT+0(float_function):
@@ -1509,7 +1552,7 @@ These members describe the incremental linking table. The incremental linking ta
 @ILT+35(main):
   0000000140001028: E9 E3 00 00 00     jmp         main
 ```
-After the address map, there is the _thunk map_. The thunk map is an array of u32 relative virtual addresses, one for every thunk.
+After the address map, there is the _thunk map_. The thunk map is an array of `u32` relative virtual addresses, one for every thunk.
 The relative virtual address points to the function pointed to by the incremental linking thunk.
 
 
@@ -1524,7 +1567,7 @@ struct pdb_thunk_section_map_entry{
 };
 ```
 This array is used to lookup whether a given virtual address is part of the incremental linking table.
-As a result, there seems to be only ever one entry in this array corresponding the the .text section.
+As a result, there seems to be only ever one entry in this array corresponding the the `.text` section.
 
 
 ## Named streams
@@ -1674,7 +1717,7 @@ cares probably, but I felt I should do some digging for completeness sake.
 
 # CodeView
 
-As stated in the overview, CodeView is the debugging information format created by microsoft.
+As stated in the overview, CodeView is the debugging information format created by Microsoft.
 It has quite the history, its inception probably dating back to the 1985 CodeView debugger created
 by David Norris (at least according to [Wikipedia](https://en.wikipedia.org/wiki/CodeView)).
 As such there are a lot of quirks and old definitions.
@@ -1688,8 +1731,7 @@ describing some of the CodeView type and symbol records.
 
 There are three parts to CodeView, there are type records ([`LEAF_ENUM_e`](https://github.com/microsoft/microsoft-pdb/blob/805655a28bd8198004be2ac27e6e0290121a5e89/include/cvinfo.h#L772C14-L772C26)), 
 symbol records ([`SYM_ENUM_e`](https://github.com/microsoft/microsoft-pdb/blob/805655a28bd8198004be2ac27e6e0290121a5e89/include/cvinfo.h#L2735C14-L2735C25)) and line information ([`DEBUG_S_SUBSECTION_TYPE`](https://github.com/microsoft/microsoft-pdb/blob/805655a28bd8198004be2ac27e6e0290121a5e89/include/cvinfo.h#L4576C14-L4576C14`)).
-
-There is already some infomation about these inside the `TPI Stream` and `Module Symbol Stream` sections above.
+We have already provided some documentation about these inside the `TPI Stream` and `Module Symbol Stream` sections above.
 
 Each of these consist of an "array" of serialized variable length structures. Each of these structures starts of with a header describing its length in some way.
 Type and symbol records start with the following header:
@@ -1820,10 +1862,10 @@ For example:
 
 ### Symbol Records
 
-Symbols records are in some sense simpler as type records, because there is no concept of _symbol indices_. 
+Symbols records are in some sense simpler than type records, because there is no concept of _symbol indices_. 
 There are also a lot of "random" symbol records, e.g: `S_TRAPOLINE`, `S_SEPCODE`, `S_FRAMECOOKIE`, ...
 Documenting all of these is out of scope, but we will provide some documentation on procedure debug information,
-as it has an interresting hierachy.
+as it has an interesting hierarchy.
 
 For each function there is a `S_GPROC32` or `S_LPROC32` symbol (inside the object files these are `S_GPROC32_ID` and `S_LPROC32_ID` for some reason):
 ```c
@@ -1845,7 +1887,7 @@ typedef struct PROCSYM32 {
 ```
 Implicitly, this opens a "block". The end of the block is an `S_END` symbol. 
 The `pEnd` member is the offset from the base of the symbol records to the `S_END` symbol of the initial block created by the `PROCSYM32`.
-This can be used to skip the debugging information for a function an "walk" to the next symbol.
+This can be used to skip the debugging information for a function and "walk" to the next symbol.
 One remark here, is that inside .obj files `pEnd` is zero and the terminating `S_END` is instead a `S_PROC_ID_END`.
 
 New blocks can be opened using the `S_BLOCK32` symbol record:
@@ -2009,7 +2051,7 @@ functionality.
 ### Old CodeView Symbols
 
 There are two old CodeView symbol versions. Ones, postfixed `_16t` which means they have 
-type indices which are 16-bits instead of the 32-bits which are used in the current version and 
+type indices that are 16-bits instead of the 32-bits used in the current version and 
 ones, which are postfixed `_ST` which means any string contained in the records are "u8 pascal strings",
 meaning of the form:
 ```c
@@ -2018,24 +2060,22 @@ struct pascal_string{
     u8 string[/*length*/];
 };
 ```
-Instead of zero-terminated strings.
-
-Both of these versions are not really used anymore.
+Instead of zero-terminated strings. Both of these versions are not really used anymore.
 
 ## CodeView Uses
 
-In the following we will discuss the different kind of files which contain codeview information.
-We will only mention symbols which are used by C code.
+In the following, we will discuss the different kind of files that contain CodeView information.
+We will only mention symbols used by C code.
 
 ### Object files (.obj)
 
 The Compiler emits two special sections into the object file. The `.debug$S` and the `.debug$T` sections.
 (Technically, there is also a `.debug$P` for precompiled header files and a deprecated `.debug$F` see [here](https://learn.microsoft.com/en-us/windows/win32/debug/pe-format#debugf-object-only)).
 The `.debug$T` section contains the type and id information, while the `.debug$S` contains symbol, file and line information.
-There sometimes are multiple `.debug$S` sections.
+When COMDAT sections are present (for example extern inline functions or `/Gy`), there sometimes are multiple `.debug$S` sections, but only one not marked `COMDAT` which contains the `DEBUG_S_FILECHKSMS` subsection.
 
-Both of these sections start with the codeview signature, a 4-byte value of `CV_SIGNATURE_C13 (4)`.
-The `.debug$T` then just contains the type and id records for the type used in the object file.
+Both of these sections start with the CodeView signature, a 4-byte value of `CV_SIGNATURE_C13 (4)`.
+The `.debug$T` then just contains the type and id records for the types used in the object file.
 The `.debug$S` section continues with a sequence of `DEBUG_S_SUBSECTIONS`, each of which starts with the following header
 ```c
 struct codeview_debug_subsection_header{
@@ -2056,7 +2096,7 @@ as already discussed above. Usually, the following subsections are present:
 * `DEBUG_S_FILECHKSMS (0xf4)`
    This section contains a checksum for each file which is used for line information.
 
-All of these were discussed above.
+All of these were discussed [above](#line-information).
 
 The following type and id records are usually present inside a `.debug$T` section:
 
@@ -2096,17 +2136,17 @@ S_LDATA32  - One for each global with static storage class.
 ```
 This is obviously just a random sample and there might be many more symbols and types which may be interesting based on the use case.
 
-// @cleanup: warn S_COMPILE3 machine (and maybe toolchain) used.
+**WARNING:** Tools like `cvdump.exe` use the `machine` field of the `S_COMPILE3` symbol to decide how to dump certain section of the PDB.
 
 #### Relocations
 
 Because the `.debug$S` sections are contained in object files, which still have to be linked,
-they cannot know the location of symbols they refer to. Therefore, there are relocations, that have to be applied.
-There are two specially designed relocation types for debug info, namely `IMAGE_REL_AMD64_SECTION` and `IMAGE_REL_AMD64_SECREL`.
+they cannot know the location of symbols they refer to. Therefore, there are relocations that have to be applied.
+There are two specially designed relocation types for debug information, namely `IMAGE_REL_AMD64_SECTION` and `IMAGE_REL_AMD64_SECREL`.
 
 #### `LF_TYPESERVER2`
 
-One final note is on the [`/Zi` compiler option](https://learn.microsoft.com/en-us/cpp/build/reference/z7-zi-zi-debug-information-format?view=msvc-170#zi). When using this option MSVC will split the `.debug$T` into a PDB.
+When using the [`/Zi` compiler option](https://learn.microsoft.com/en-us/cpp/build/reference/z7-zi-zi-debug-information-format?view=msvc-170#zi) MSVC will split the `.debug$T` section into a PDB.
 This PDB, usually named `vc140.pdb` is a _Type Server PDB_ (see below). In this case the only entry inside the 
 `.debug$T` section is an `LF_TYPESERVER2` entry:
 ```c
