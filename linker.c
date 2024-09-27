@@ -78,24 +78,16 @@ struct file load_file(char *file_name){
     struct file file = {};
     
     FILE *handle = fopen(file_name, "rb");
-    if(!handle){
-        print("Could not open %s\n", file_name);
-        return file;
-    }
+    if(!handle) return file;
     
     fseek(handle, 0, SEEK_END);
     size_t size = _ftelli64(handle);
-    if(size == -1){
-        print("Could not get the file size for %s\n", file_name);
-        return file;
-    }
+    if(size == -1) return file;
+    
     fseek(handle, 0, SEEK_SET);
     
     u8 *memory = malloc(size);
-    if(!memory){
-        print("Could not allocate memory for %s\n", file_name);
-        return file;
-    }
+    if(!memory) return file;
     
     fread(memory, 1, size, handle);
     fclose(handle);
@@ -705,19 +697,28 @@ int main(int argc, char *argv[]){
     struct ar_file     *ar_files     = push_array(&arena, struct ar_file,     amount_of_files);
     
     // 
+    // If available, get the %LIB% environment variable.
+    // 
+    char *LIBPATH = getenv("LIB");
+    
+    // 
     // Parse all the object files.
     // 
     for(u32 index = 0; index < amount_of_files; index++){
         char *file_name = argv[index + 1];
-        
-        struct file file = load_file(file_name);
-        if(!file.memory) return 1;
         
         char *extension = (char *)_mbsrchr((u8 *)file_name, '.');
         
         int success = 0;
         
         if(strcmp(extension, ".obj") == 0){
+            
+            struct file file = load_file(file_name);
+            if(!file.memory){
+                print("Error: Failed to load '%s'.\n", file_name);
+                return 1;
+            }
+            
             struct object_file object_file = {
                 .file_name = file_name,
                 .stream = {
@@ -731,6 +732,33 @@ int main(int argc, char *argv[]){
             
             object_files[amount_of_object_files++] = object_file;
         }else if(strcmp(extension, ".lib") == 0){
+            
+            struct file file = load_file(file_name);
+            
+            if(!file.memory && LIBPATH){
+                char *path = LIBPATH;
+                while(*path){
+                    char *end = (char *)_mbschr((unsigned char *)path, ';');
+                    
+                    char buffer[0x100];
+                    if(end){
+                        snprintf(buffer, sizeof(buffer), "%.*s/%s", end - path, path, file_name);
+                        path = end + 1;
+                    }else{
+                        snprintf(buffer, sizeof(buffer), "%s/%s", path, file_name);
+                        path = "";
+                    }
+                    
+                    file = load_file(buffer);
+                    if(file.memory) break;
+                }
+            }
+            
+            if(!file.memory){
+                print("Error: Could not find '%s'.\n", file_name);
+                return 1;
+            }
+            
             struct ar_file ar_file = {
                 .file_name = file_name,
                 .stream = {
@@ -751,7 +779,7 @@ int main(int argc, char *argv[]){
     }
     
     // 
-    // Figure out all external symbols and put them into a hash table for feature use.
+    // Figure out all external symbols and put them into a hash table for future use.
     // 
     u64 external_symbols_capacity = 0x100;
     u64 external_symbols_size = 0;
@@ -894,7 +922,7 @@ int main(int argc, char *argv[]){
     // Scan the external symbols and put them into a couple different buckets:
     // 
     //    1. defined symbols (we could find an external symbol with object file, section, offset)
-    //    2. undefiend but sized symbols, these go into the .bss section later
+    //    2. undefined but sized symbols, these go into the .bss section later
     //    3. dll-imports
     //    4. special symbols like __ImageBase
     //    5. Undefined symbols (errors)
