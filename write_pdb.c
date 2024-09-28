@@ -1246,7 +1246,7 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
                             u32 *type_index = (u32 *)symbol_data;
                             remap_type_index(*type_index);
                             
-                            // @cleanup: They skip the udt if it is refering to a forward reference.
+                            // @cleanup: They skip the udt if it is referring to a forward reference.
                             
                             // If we are at a local scope, simply copy the thing out.
                             if(level) break;
@@ -1380,7 +1380,7 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
                         }break;
                         
                         case /*S_PROC_ID_END*/0x114f:{
-                            symbol_header->kind = 6;
+                            symbol_header->kind = /*S_END*/6;
                             
                             exit_level();
                         }break;
@@ -1861,37 +1861,6 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
                 // Module name and object name.
                 memcpy(push_array(&dbi_stream, char, size), object_file_name, size);
                 memcpy(push_array(&dbi_stream, char, size), object_file_name, size);
-                
-                // Align the stream on a 4-byte boundary.
-                push_array(&dbi_stream, u32, 0);
-            }
-            
-            // @cleanup: Talk abount module alignment in the documentation.
-            
-            {
-                // 
-                // Special '* Linker *' module.
-                // 
-                
-                linker_module = push_struct(&dbi_stream, struct pdb_module_information);
-                
-                linker_module->first_code_contribution = (struct pdb_section_contribution){
-                    .section_id = -1,
-                    .size = -1,
-                    .module_index = -1,
-                };
-                
-                // @incomplete:
-                linker_module->stream_index_of_module_symbol_stream = (u16)-1;
-                linker_module->byte_size_of_symbol_information = 0;
-                linker_module->byte_size_of_c11_line_information = 0;
-                linker_module->byte_size_of_c13_line_information = 0;
-                linker_module->amount_of_source_files = 0;
-                
-                // @cleanup: talk about the object name being * Linker * in the Readme.
-                char *object_file_name = "* Linker *";
-                size_t size = strlen(object_file_name) + 1;
-                memcpy(push_array(&dbi_stream, char, size + /*object name = 0*/1), object_file_name, size);
                 
                 // Align the stream on a 4-byte boundary.
                 push_array(&dbi_stream, u32, 0);

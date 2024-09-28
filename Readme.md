@@ -21,11 +21,11 @@ repository also contains a dumping utility called `cvdump`.
 
 Armed with these sources, the plan for this repository is to provide technical documentation, a validation utility (`validate.c`) and
 a toy-linker (`linker.c`) with PDB support (`pdb_writer.c`) to hopefully provide a complete picture of the PDB format.
-The validation utility tries to check much about the PDB format and has a `-dump` option. The toy linker tries to be compatible with:
+The validation utility tries to check as much about the PDB format as possible and has a `-dump` option. The toy-linker tries to work similar to:
 ```
-link.exe /NODEFAULTLIB /ENTRY:_start /SUBSYSTEM:console /DYNAMICBASE:no /DEBUG:FULL <.obj-files> <.lib-files>
+link.exe /NODEFAULTLIB /ENTRY:_start /SUBSYSTEM:console /DYNAMICBASE:no /DEBUG:FULL,CTYPES <.obj-files> <.lib-files> /OUT:a.exe /PDB:a.pdb /PDBALTPATH:a.pdb
 ```
-for simple object files.
+for simple object files, compiled with for example using `cl.exe /c /GS- /Z7 <c-files>`.
 
 Note that all information in this repository is from XX.XX.XXXX and is might change when Microsoft updates their tools.
 For reference, the MSVC version I am using is 19.28.29336.
@@ -79,7 +79,7 @@ struct RSDSI                       // RSDS debug info
 The [GUID](https://learn.microsoft.com/en-us/windows/win32/api/guiddef/ns-guiddef-guid) is a unique _number_ which 
 is used to match the PDB to the EXE and the `age` is used for incremental linking. Here, on a incremental relink, 
 the GUID stays the same, but the age is incremented.
-Finally, the `szPdb` is the zero-terminated path to the PDB. Per default, MSVC uses the full path of the PDB for `szPdb`, but a alternate PDB path can be specified using the liker option [`/PDBALTPATH`](https://learn.microsoft.com/en-us/cpp/build/reference/pdbaltpath-use-alternate-pdb-path?view=msvc-170). 
+Finally, the `szPdb` is the zero-terminated path to the PDB. Per default, MSVC uses the full path of the PDB for `szPdb`, but an alternate PDB path can be specified using the linker option [`/PDBALTPATH`](https://learn.microsoft.com/en-us/cpp/build/reference/pdbaltpath-use-alternate-pdb-path?view=msvc-170). 
 All this information is also displayed by `dumpbin`.
 
 For most Microsoft executables the `szPdb` stored, is simply the name of the PDB, for example:
@@ -777,7 +777,7 @@ The MFC presumably stands for "Microsoft Foundation Class" see [here](https://le
 
 The `was_linked_incrementally` flag is set whenever an incremental linking table is present.
 The `private_symbols_were_stripped` flag is set when the `PDBCopy` utility was used to remove private symbol information.
-The `the_pdb_allows_conflicting_types` flag is set when the PDB was created using the undocumented `/DEBUG:CTypes` linker flag.
+The `the_pdb_allows_conflicting_types` flag is set when the PDB was created using the undocumented `/DEBUG:CTypes` linker flag. NOTE: At least, both llvm and the microsoft-pdb repository claim so, but I was not able to verify this behaviour.
 
 * `machine_type` 
 
@@ -818,7 +818,7 @@ struct pdb_module_information{
     u32 edit_and_continue_source_file_string_index;
     u32 edit_and_continue_pdb_file_string_index;
     
-    char module_name_and_file_name[];
+    char module_name_and_file_name_and_padding[];
 };
 ```
 * `unused`, `unused2`
@@ -862,11 +862,11 @@ The `edit_and_continue_source_file_string_index` is sometimes set by MASM for `.
 `memcpy.asm`. The `edit_and_continue_pdb_file_string_index` only seems to be set for the special
 `* Linker *` module (see below). It has this field set to point at the full path to the PDB.
 
-* `module_name_and_file_name` 
+* `module_name_and_file_name_and_padding` 
 
 This member makes the `struct pdb_module_information` variable sized. 
-First there is a zero-terminated string which is the module name, then there a zero-terminated string which is the _file name_.
-If the module is a simple object file, then both string are just the full path of the object file.
+First there is a zero-terminated module name, then there a zero-terminated _file name_ and finally padding to align to a 4-byte boundary.
+If the module is a simple object file, then both strings are just the full path of the object file.
 E.g.: `module_name = "C:\Path\to\object.obj"` and `file_name = "C:\Path\to\object.obj"`.
 If the object file is part of an archive file (`.lib`), then the file name is the full path of the archive file and the module name is the name of the object.
 E.g.: `module_name = "object.obj"` and `file_name = "C:\Path\to\archive.lib"`.
@@ -874,6 +874,7 @@ Note that the module name in this case is the module name specified in the archi
 For example for `LIBCMT.lib` we might have:
 * `module_name = "d:\agent\_work\63\s\Intermediate\vctools\libcmt.nativeprjr\amd64\exe_main.obj"` and 
 * `file_name = "C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\VC\Tools\MSVC\14.28.29333\lib\x64\LIBCMT.lib"`
+
 
 #### Special `* Linker *` module
 
@@ -1042,7 +1043,7 @@ The source information substream is aligned to the file alignment of 4 bytes.
 
 ### Type Server Map Substream
 
-We will not document this substream as the all implementation is `#if 0` out by the `PDB_TYPESERVER` define.
+We will not document this substream as the implementation is `#if 0` out by the `PDB_TYPESERVER` define.
 
 ### Edit and Continue Substream
 
@@ -1266,7 +1267,6 @@ one for each global symbol referenced by this module. In this way, the PDB _reme
 reference counts inside the global symbol index stream (see below) came to be. 
 On a relink of a compilation unit, the reference counts of the global symbols referenced by the compilation unit are decremented.
 
-@cleanup: talk about whats in the special * LINKER * module.
 
 ## Symbol Record Stream
 
@@ -1280,10 +1280,11 @@ struct codeview_symbol_header{ // Also see SYMTYPE in cvinfo.h
 };
 ```
 All symbol records in the symbol record stream are produced by `link.exe`/`mspdbcode.dll` and are based on the symbols provided by the compiler in the object files.
-
+The code that produces the symbol records can be found [here](https://github.com/microsoft/microsoft-pdb/blob/0fe89a942f9a0f8e061213313e438884f4c9b876/PDB/dbi/mod.cpp#L2587).
 
 **WARNING:** Symbol records in the _Symbol Record Stream_ are **not** necessarily valid. 
 They should only be considered valid, if they are referenced by either the Global Symbol Index Stream (for non-`S_PUB32` symbols), or the Public Symbol Index Stream (for `S_PUB32` symbols).
+Furthermore, some symbol records emit by The liker have invalid Section ids. Namely special symbols like `__ImageBase` and load configuration members like `__guard_longjmp_table`.
 
 The symbol record stream contains one `S_PROCREF` or `S_LPROCEREF` for every procedure, a `S_GDATA32` or `S_LDATA32` 
 for global declarations, a `S_CONSTANT` for every named constant (enum or const expr) and a `S_UDT` for every typedef.
@@ -1303,7 +1304,6 @@ enum { my_constant = 2 };
 Then only one of the `my_constant` and `my_type` are referenced in the symbol record stream. 
 The other is contained in the module symbol stream of the module which declares it.
 
-The code which produces the symbol records can be found [here](https://github.com/microsoft/microsoft-pdb/blob/0fe89a942f9a0f8e061213313e438884f4c9b876/PDB/dbi/mod.cpp#L2587).
 In cvinfo.h the symbol `S_DATAREF` is also defined, but seems to be unused at this point.
 
 **WARNING:** These reference symbols (`S_PROCREF`, `S_LPROCREF`, `S_ANNOTATIONREF`) use a one-based module id, instead of zero-based module index.
@@ -1888,7 +1888,7 @@ typedef struct PROCSYM32 {
 Implicitly, this opens a "block". The end of the block is an `S_END` symbol. 
 The `pEnd` member is the offset from the base of the symbol records to the `S_END` symbol of the initial block created by the `PROCSYM32`.
 This can be used to skip the debugging information for a function and "walk" to the next symbol.
-One remark here, is that inside .obj files `pEnd` is zero and the terminating `S_END` is instead a `S_PROC_ID_END`.
+One remark here, is that inside .obj files `pEnd` is zero and for a `PROCSYM32` the terminating `S_END` is instead a `S_PROC_ID_END`.
 
 New blocks can be opened using the `S_BLOCK32` symbol record:
 ```c
@@ -2115,7 +2115,7 @@ LF_FUNC_ID      - for each function
 
 LF_STRING_ID    - for each file name and then for build info
 LF_SUBSTR_LIST  - One for build info.
-LF_BUILDINFO    - Contains compiler invokation and so on.
+LF_BUILDINFO    - Contains compiler invocation and so on.
 ```
 
 The following symbol records are usually present inside a `.debug$S` section:
@@ -2180,5 +2180,80 @@ During linking (using /DEBUG:FULL), the linker then includes the type records in
 
 This is the _standard_ PDB. As we have already seen above, what information is provided to the linker,
 we can now try to understand what the linker does to this information and where it is saved.
+All of the information presented in this section is based on the `write_pdb.c` file contained in this repository.
+
+#### Type records
+
+The type and id records contained in the `.debug$T` sections of each of the object files have to be merged into the IPI and TPI stream respectively. 
+Each record is assigned a type index depending on its position in the `.debug$T` section 
+and might reference other types by such an index. This means when merging type records and hence changing the implicit type indices, 
+all records have to be reexamined and any references to prior records patched up.
+After this step, the id or type record is looked up in the TPI or IPI hash table. 
+If there is a previous matching record in the hash table, the type record is a type definition and there is a
+type definition with the same name earlier in the bucket, the hash record is added to the start of the bucket and an entry is made in the `udt_order_adjust_table`.
+If there is no matching record, the record is added to the TPI or IPI stream,
+the new entry is added to the hash table and any entry in the `udt_order_adjust_table` is cleared.
+Furthermore, if the entry would exceed 8KiB since the last index offset buffer entry was added, also added an index offset buffer entry.
+
+One final complication are `LF_UDT_SRC_LINE` records. These records have to be adjusted to be `LF_UDT_MOD_SRC_LINE` records, by appending the module id of the compilation unit.
+
+#### Symbol records
+
+We assume here that there is only one `.debug$S` section and it contains only the subsections `DEBUG_S_SYMBOLS`, `DEBUG_S_LINES` and both a `DEBUG_S_FILECHKSMS` and `DEBUG_S_STRINGTABLE`.
+Any `DEBUG_S_LINES` subsection is simply copied to the `c13_line_information` in the Module Symbol Stream of the compilation unit. The `DEBUG_S_STRINGTABLE` is merged into the /names stream.
+Therefore, the `DEBUG_S_FILECHKSMS` needs to be patched up to contain the new offsets and is then also copied into the `c13_line_information`.
+
+What happens to the symbol records inside the `DEBUG_S_SYMBOLS` subsection is more complicated. 
+Some of the records are copied into the `symbol_information` inside the Module Symbol Stream while others are copied and deduplicated into the Symbol Record Stream.
+As [discussed above](#symbol-records), symbol records in the subsection are subject to a block hierarchy.
+Each block in the hierarchy has a `pParent` and a `pEnd` member which are offsets inside the `symbol_information`.
+These entries are not filled out in the object file, hence the linker needs to track the level and fill in these members.
+
+Going through the list of symbols usually present inside the `.debug$S` section (see above):
+
+* `S_{G/L}PROC32_ID`   
+These records are converted to `S_{G/L}PROC32` by changing the `typind` field from referencing the `LF_PROC_ID` for the function to referencing its type type instead.
+Furthermore, a reference symbol (`S_[L]PROCREF`) to the function is added to the Symbol Record Stream and the Global Symbol Index hash table.
+Then the record and all subsequent function specific records such as `S_LOCAL` are copied to the `symbol_information` inside the Module Symbol Stream of the compilation unit.
+
+* `S_GDATA32`  
+These external data declarations are copied/deduplicated into the Symbol Record Stream and added to the Global Symbol Index hash table.
+If the record is added, it is added to the start of its bucket, meaning when looking up a global declaration we always find the newest `S_GDATA32` symbol first.
+
+* `S_LDATA32`
+At global scope, these static data declarations are handled the in a similar way to their external counter-parts.
+The difference being, that static data declarations are added to the end of its bucket. This means you will always find external data declaration before any static data declarations for a given name.
+At local scope (if the level in the block hierarchy is non-zero), they are simply copied into the module symbol stream.
+
+* `S_CONSTANT`   
+At local scope these symbol records are simply copied to the Module Symbol Stream. At global scope, they are added to the Symbol Record Stream unless there is already an `S_CONSTANT` of the same name, 
+but a different value. In this case the record is copied to the Module Symbol Stream.
+
+* `S_UDT`   
+These work the same as constants, but some `S_UDT` records are eliminated, for example typedefs to pre-declarations and (if /DEBUG:CTypes was not used) typedefs to a structure of the same name.
+    ```c
+    typedef struct never_define my_never_defined_type;
+    typedef struct same_name{
+        int a;
+    } same_name;
+    ```
+    
+For code that does this translation, see either the [original source code](https://github.com/microsoft/microsoft-pdb/blob/0fe89a942f9a0f8e061213313e438884f4c9b876/PDB/dbi/mod.cpp#L2587), 
+the [llvm reimplementation](https://github.com/llvm/llvm-project/blob/641b4d5370f1ce2f5d448cf63519f391be1cf263/lld/COFF/PDB.cpp#L581) or my version in `write_pdb.c`.
+
+#### Other information
+
+Additionally to the type and symbol information, the follow information is also always provided by the linker:
+* **Section Contributions**  
+These are added to a substream in the DBI stream and are needed to map addresses to the module which contains debug information for the address.
+
+* **The Image Section Table**   
+The section table is copied into the debug header substream inside the DBI stream and is used to translate between relative virtual addressing and section:offset addressing.
+
+* **Public Symbol Records**   
+Public symbol records give a _linker view_ of symbols, are copied to the Symbols Record Stream and inserted into Public Symbol Index hash table as well as into the address map also contained in the Public Symbol Index Stream.
+
+* **The Thunk Map**  
+If the executable was incrementally linked, the thunk map is also added to the Public Symbol Index Stream.
 
 

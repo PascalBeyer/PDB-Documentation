@@ -1222,6 +1222,7 @@ void pdb_validate(u8 *pdb_base, size_t pdb_file_size, int dump){
         //
         
         if(dump) print("\nFeature Flags:\n");
+        
         while(pdb_stream.offset < pdb_stream.size){
             u32 feature_code;
             if(msf_read_from_stream(&pdb_stream, &feature_code, sizeof(feature_code))){
@@ -1340,7 +1341,7 @@ void pdb_validate(u8 *pdb_base, size_t pdb_file_size, int dump){
             
             // 
             // The 'udt_order_adjust_table' is used to adjust the order of entries inside 
-            // of a collision chain of hte hash table above. This is useful for types
+            // of a collision chain of the hash table above. This is useful for types
             // which have been altered, but then the change was reverted.
             // 
             u32 udt_order_adjust_table_offset;
@@ -1543,7 +1544,7 @@ void pdb_validate(u8 *pdb_base, size_t pdb_file_size, int dump){
                                 } member;
                                 
                                 if(msf_read_from_stream(&record_stream, &member, sizeof(member))){
-                                    error("Error: LF_MEMBER entry of  %s %s record with type index 0x%x is too small.", kind_name, type_or_id, type_index);
+                                    error("Error: LF_MEMBER entry of %s %s record with type index 0x%x is too small.", kind_name, type_or_id, type_index);
                                 }
                                 
                                 if(member.type_index >= type_index){
@@ -1562,8 +1563,10 @@ void pdb_validate(u8 *pdb_base, size_t pdb_file_size, int dump){
                                 
                                 if(dump) print("        LF_MEMBER: %s\n", name);
                             }break;
+                            
                             default:{
-                                error("Error: Unknown element kind 0x%x in LF_FIELDLIST with type index 0x%x.", kind, record_kind);
+                                if(dump) print("       Stopping here because of unknown (probably C++) member entry kind 0x%x.\n", kind);
+                                record_stream.offset = record_stream.size;
                             }break;
                         }
                         
@@ -3573,8 +3576,8 @@ void pdb_validate(u8 *pdb_base, size_t pdb_file_size, int dump){
     }else{
         // Public symbol index stream:
         // 
-        // The public symbol index stream contains a verision of the global symbol index stream,
-        // which is intendet to speed-up looking up public symobls (S_PUB32).
+        // The public symbol index stream contains a version of the global symbol index stream,
+        // which is intended to speed-up looking up public symbols (S_PUB32).
         // It also contains information about thunks in the executable and an address map,
         // which allows looking up public symbols by relative virtual address.
         // 
@@ -3757,7 +3760,7 @@ void pdb_validate(u8 *pdb_base, size_t pdb_file_size, int dump){
                 }
                 
                 if(!found){
-                    error("Error: Entry %u of the thunk map inside the public symobl index stream, specifies a relative virtual address of 0x%x, but there is no 'S_PUB32' associated with it.", thunk_index, function_rva);
+                    error("Error: Entry %u of the thunk map inside the public symbol index stream, specifies a relative virtual address of 0x%x, but there is no 'S_PUB32' associated with it.", thunk_index, function_rva);
                 }
                 
                 if(dump) print("    [%u] 0x%x -> %s\n", thunk_index, function_rva, found);
