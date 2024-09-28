@@ -925,7 +925,7 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
                         udt_mod_src_line_record_stack_space.type_index         = udt_src_line->type_index;
                         udt_mod_src_line_record_stack_space.src_file_string_id = udt_src_line->src_file_string_id;
                         udt_mod_src_line_record_stack_space.line_number        = udt_src_line->line_number;
-                        udt_mod_src_line_record_stack_space.module = (object_file_index + 1); // @cleanup: Do I talk about this +1 in my documentation?
+                        udt_mod_src_line_record_stack_space.module = (object_file_index + 1); 
                         udt_mod_src_line_record_stack_space.f1 = 0xf1;
                         udt_mod_src_line_record_stack_space.f0 = 0xf0;
                         
@@ -1702,7 +1702,6 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
         *push_struct(&gsi_stream, u32) = /*version_signature*/(u32)-1;
         *push_struct(&gsi_stream, u32) = /*version*/0xeffe0000 + 19990810;
         
-        // @cleanup: Document Is this size global_symbol_count * 12 or global_symbol_count * 8;
         *push_struct(&gsi_stream, u32) = /*hash_record_byte_size*/global_symbol_count * 8;
         u32 *bucket_information_byte_size = push_struct(&gsi_stream, u32);
         
@@ -1943,7 +1942,7 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
             /*source_file_base_index_per_module*/push_array(&dbi_stream, u16, amount_of_modules);
             /*amount_of_source_files_per_module*/push_array(&dbi_stream, u16, amount_of_modules);
             
-            // @cleanup: source_file_name_offset_in_string_buffer is aligned or not Document?
+            // @note: source_file_name_offset_in_string_buffer is implitly aligned on a 4-byte boundary as we have 2 sizeof(u16) * amount_of_modules things before it.
             /*source_file_name_offset_in_string_buffer*/;
             
             /*string_buffer*/push_struct(&dbi_stream, u8);
