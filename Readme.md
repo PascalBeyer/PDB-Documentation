@@ -34,7 +34,7 @@ Any sample code inside the `Readme.md` is only intended to clarify the layout an
 No security checks are performed and the code might not even have been tested.
 For "tested" (but overly strict) parsing code see `validate.c` and for tested writer code see `write_pdb.c`.
 
-# Content
+# Table of Contents
 
  1. [Finding the PDB](#finding-the-pdb)  
  2. [Multistream File (MSF)](#multistream-file-msf)  
@@ -1093,8 +1093,7 @@ The _Edit and Continue Substream_ has the same layout as the "/names" stream.
 We have already seen its use as the string table stream for the `edit_and_continue_source_file_string_index` 
 and `edit_and_continue_pdb_file_string_index` members of the `pdb_module_information` structure.
 
-#### Warning:
-The size of the edit and continue substream is not aligned to any particular boundary, 
+**WARNING:** The size of the edit and continue substream is not aligned to any particular boundary, 
 this means the following substream is unaligned.
 Luckily, there is only the _Optional Debug Header Substream_ left.
 
