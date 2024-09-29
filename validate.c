@@ -192,7 +192,7 @@ __declspec(printlike) __declspec(noreturn) void error(char *format, ...){
     _exit(1);
 }
 
-__declspec(noreturn) char *format_string(char *format, ...){
+__declspec(printlike) char *format_string(char *format, ...){
     va_list va, copy;
     va_start(va, format);
     va_copy(copy, va);
@@ -348,7 +348,7 @@ struct msf_streams{
     }
     
     // 
-    // Resolve the first layer of indirection, building the stream table stream.
+    // Resolve the second layer of indirection, building the stream table stream.
     // 
     
     u8 *stream_table_stream = malloc(stream_table_stream_page_size * page_size);
@@ -402,11 +402,9 @@ struct msf_streams{
         streams[stream_index].size = stream_size;
         streams[stream_index].data = stream_data;
         
-        if(stream_index == 0){
+        if(stream_index == /*Old Stream Table Stream*/0){
             // 
-            // @cleanup: What to detect here? It seems these pages are already marked as free.
-            //           Or they alias to other pages (in the case where it did not need to change ?).
-            //           Maybe we just ignore this stream entirely.
+            // The pages in this stream are already freed.
             // 
             stream_page_base += stream_page_size;
             continue;
@@ -557,7 +555,7 @@ struct msf_stream validate_string_table_stream(struct msf_stream names_stream, c
     // as 0 is treated as the invalid value for the 'buckets'.
     // We assume a hash version of 1, which is the 'pdb_string_hash'.
     //
-    // One important aspect here is that there is no enforced alignement on the 'string_buffer'.
+    // One important aspect here is that there is no enforced alignment on the 'string_buffer'.
     // In fact usually, the rest of the section after the string buffer is just unaligned.
     //
     
@@ -1311,10 +1309,10 @@ void pdb_validate(u8 *pdb_base, size_t pdb_file_size, int dump){
             
             //
             // The stream index for the TPI/IPI hash stream.
-            // The aux stream seems to be unused.
+            // The auxiliary stream seems to be unused.
             //
-            u16 hash_stream_index;
-            u16 hash_aux_stream_index;
+            u16 stream_index_of_hash_stream;
+            u16 stream_index_of_auxiliary_hash_stream;
             
             //
             // The hash key size and the number of buckets used for the incremental linking table below.
@@ -1358,8 +1356,8 @@ void pdb_validate(u8 *pdb_base, size_t pdb_file_size, int dump){
             print("    minimal type index 0x%x\n", index_stream_header.minimal_type_index);
             print("    one past last type index 0x%x\n", index_stream_header.one_past_last_type_index);
             print("    bytes of type record data 0x%x\n", index_stream_header.byte_count_of_type_record_data_following_the_header);
-            print("    hash stream index %hu\n", index_stream_header.hash_stream_index);
-            print("    aux hash stream index %hu\n", index_stream_header.hash_aux_stream_index);
+            print("    hash stream index %hu\n", index_stream_header.stream_index_of_hash_stream);
+            print("    aux hash stream index %hu\n", index_stream_header.stream_index_of_auxiliary_hash_stream);
             print("    hash key size 0x%x\n", index_stream_header.hash_key_size);
             print("    number of hash buckets 0x%x\n", index_stream_header.number_of_hash_buckets);
             print("    hash table index buffer offset 0x%x\n", index_stream_header.hash_table_index_buffer_offset);
@@ -1946,12 +1944,12 @@ void pdb_validate(u8 *pdb_base, size_t pdb_file_size, int dump){
             error("Error: The %s stream contains more type records than its header specifies.", tpi_or_ipi);
         }
         
-        if(index_stream_header.hash_stream_index != 0xffff){
-            if(index_stream_header.hash_stream_index >= streams.amount_of_streams){
+        if(index_stream_header.stream_index_of_hash_stream != 0xffff){
+            if(index_stream_header.stream_index_of_hash_stream >= streams.amount_of_streams){
                 error("Error: The hash stream of the %s stream has an invalid index.", tpi_or_ipi);
             }
             
-            struct msf_stream hash_stream = streams.streams[index_stream_header.hash_stream_index];
+            struct msf_stream hash_stream = streams.streams[index_stream_header.stream_index_of_hash_stream];
             
             // 
             // Validate the index offset buffer:
@@ -2669,6 +2667,7 @@ void pdb_validate(u8 *pdb_base, size_t pdb_file_size, int dump){
     for(u32 section_contribution_index = 0; section_contribution_index < amount_of_section_contributions; section_contribution_index++){
         
         // @Warning: The 'segment_id_in_object_file' is uninitialized, if the contribution is v1.
+        // @cleanup: Care about this value?
         struct pdb_section_contribution_v2 contribution; 
         msf_read_from_stream(&section_contribution_substream, &contribution, section_contribution_entry_size);
         
@@ -3835,7 +3834,7 @@ void pdb_validate(u8 *pdb_base, size_t pdb_file_size, int dump){
         //     u32 bucket_bitmap[(IPHR_HASH/32) + 1];
         //     u32 bucket_offsets[amount_of_present_buckets];
         //
-        // The serialized hash records have the follwing layout:
+        // The serialized hash records have the following layout:
         //    u32 symbol_offset;
         //    u32 reference_count;
         // And they are supposed to get deserialized into
