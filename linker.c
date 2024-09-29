@@ -68,7 +68,6 @@ void print_memory_range(void *_memory, u64 size, u64 offset){
     }
 }
 
-
 struct file{
     u8 *memory;
     size_t size;
@@ -375,9 +374,7 @@ struct ar_file{
     u32 amount_of_symbols;
     u32 *member_offsets;
     u16 *symbol_member_indices;
-    char **import_symbol_string_table;
-    u32 amount_of_import_symbols;
-    u32 import_symbol_base;
+    char **symbol_string_table;
 };
 
 struct ar_file_header{
@@ -524,29 +521,18 @@ int parse_ar_file(struct memory_arena *arena, struct ar_file *ar_file){
     char **import_symbol_string_table = push_array(arena, char *, 0);
     
     u64 amount_of_strings  = 0;
-    s64 import_symbol_base = -1;
-    
     for(char *it = string_buffer; it < string_buffer_end; it += strlen(it) + 1){
-        
-        if(strncmp(it, "__imp_", 6) == 0){
-            if(import_symbol_base == -1) import_symbol_base = amount_of_strings;
-            *push_struct(arena, char *) = it + 6; // skipping the "__imp_".
-        }
-        
+        *push_struct(arena, char *) = it;
         amount_of_strings++;
     }
     
     if(amount_of_strings != amount_of_symbols) return 0;
     
-    u64 amount_of_import_symbols = push_array(arena, char *, 0) - import_symbol_string_table;
-    
     ar_file->amount_of_members          = amount_of_members;
     ar_file->amount_of_symbols          = amount_of_symbols;
     ar_file->member_offsets             = member_offsets;
     ar_file->symbol_member_indices      = symbol_member_indices;
-    ar_file->import_symbol_string_table = import_symbol_string_table;
-    ar_file->amount_of_import_symbols   = amount_of_import_symbols;
-    ar_file->import_symbol_base         = import_symbol_base;
+    ar_file->symbol_string_table = import_symbol_string_table;
     
     return 1;
 }
@@ -567,7 +553,9 @@ struct dll_import_node{
     u32 import_address_table_relative_virtual_address;
 };
 
-struct dll_import_node *ar_lookup_symbol(struct dll_list *dll_list, struct memory_arena *arena, struct ar_file *ar_file, char *symbol_name, u16 *hint){
+struct file ar_lookup_symbol(struct ar_file *ar_file, char *symbol_name){
+    
+    struct file zero_file = {0};
     
     // The algorithm goes as follows:
     //     
@@ -584,17 +572,17 @@ struct dll_import_node *ar_lookup_symbol(struct dll_list *dll_list, struct memor
         return strcmp(*_a, *_b);
     }
     
-    char **found = bsearch(&symbol_name, ar_file->import_symbol_string_table, ar_file->amount_of_import_symbols, sizeof(*ar_file->import_symbol_string_table), strcmp_wrapper);
-    if(!found) return 0;
+    char **found = bsearch(&symbol_name, ar_file->symbol_string_table, ar_file->amount_of_symbols, sizeof(*ar_file->symbol_string_table), strcmp_wrapper);
+    if(!found) return zero_file;
     
-    u32 symbol_index = (u32)(found - ar_file->import_symbol_string_table);
-    u16 member_index = ar_file->symbol_member_indices[ar_file->import_symbol_base + symbol_index];
-    if(member_index - 1 > ar_file->amount_of_members) return 0;
+    u32 symbol_index = (u32)(found - ar_file->symbol_string_table);
+    u16 member_index = ar_file->symbol_member_indices[symbol_index];
+    if(member_index - 1 > ar_file->amount_of_members) return zero_file;
     
     u32 member_offset = ar_file->member_offsets[member_index-1];
     
     struct ar_file_header *ar_file_header = stream_read_range_by_pointer(&ar_file->stream, member_offset, sizeof(struct ar_file_header), 1);
-    if(!ar_file_header) return 0;
+    if(!ar_file_header) return zero_file;
     
     struct string file_size_string = string_strip_whitespace((struct string){.data = (char *)ar_file_header->file_size_in_bytes, .size = sizeof(ar_file_header->file_size_in_bytes)});
     
@@ -603,59 +591,12 @@ struct dll_import_node *ar_lookup_symbol(struct dll_list *dll_list, struct memor
     u64 file_size = strtoull(file_size_string.data, NULL, 10);
     file_size_string.data[file_size_string.size] = ' ';
     
-    if(file_size == (u64)-1) return 0;
+    if(file_size == (u64)-1) return zero_file;
     
     u8 *file_data = stream_read_range_by_pointer(&ar_file->stream, member_offset + sizeof(*ar_file_header), 1, file_size);
-    if(!file_data) return 0;
+    if(!file_data) return zero_file;
     
-    struct ar_import_header{
-        u16 signature_1;
-        u16 signature_2;
-        u16 version;
-        u16 machine;
-        u32 time_date_stamp;
-        u32 size_of_data;
-        u16 ordinal_hint;
-        u16 type : 2;      // 0 - code, 1 - data, 2 - const
-        u16 name_type : 3; // 0 - ordinal, 1 - name, 2 - noprefix, 3 - undecorated
-        u16 reserved : 11;
-    } *import_header = (void *)file_data;
-    
-    // Layout: 
-    //    ar_import_header
-    //    identifier (symbol)
-    //    dll_name
-    // 
-    
-    if(file_size < sizeof(*import_header) || file_data[file_size-1] != 0) return 0;
-    
-    // Ensure this is an import header.
-    if(import_header->signature_1 != 0) return 0;
-    if(import_header->signature_2 != 0xffff) return 0;
-    if(import_header->name_type != 1) return 0;
-    
-    *hint = import_header->ordinal_hint;
-    
-    char *identifier = (char *)(import_header + 1);
-    char *dll_name   = identifier + strlen(identifier) + 1;
-    if(dll_name >= (char *)(file_data + file_size)) return 0;
-    
-    for(struct dll_import_node *it = dll_list->first; it; it = it->next){
-        if(strcmp(it->name, dll_name) == 0) return it;
-    }
-    
-    struct dll_import_node *node = push_struct(arena, struct dll_import_node);
-    node->name = dll_name;
-    
-    if(dll_list->first){
-        node->next = dll_list->first;
-        dll_list->first = node;
-    }else{
-        dll_list->first = dll_list->last = node;
-    }
-    dll_list->size += 1;
-    
-    return node;
+    return (struct file){.memory = file_data, .size = file_size};
 }
 
 struct string get_symbol_name(struct coff_symbol *symbol, struct object_file *object_file){
@@ -798,7 +739,17 @@ int main(int argc, char *argv[]){
         u32 is_dllimport;
         u32 dllimport_index;
         struct dll_import_node *dll;
+        
+        u32 is_dllimport_thunk;
+        u32 dllimport_thunk_index;
     } *external_symbols = push_array(&arena, struct external_symbol, external_symbols_capacity);
+    
+    {
+        // Add `__ImageBase` to the external_symbols.
+        struct external_symbol *image_base_symbol = &external_symbols[dbj2("__ImageBase", sizeof("__ImageBase") - 1) & (external_symbols_capacity - 1)];
+        image_base_symbol->name = string("__ImageBase");
+        image_base_symbol->is_ImageBase = 1;
+    }
     
     for(u32 object_file_index = 0; object_file_index < amount_of_object_files; object_file_index++){
         struct object_file *object_file = &object_files[object_file_index];
@@ -924,8 +875,7 @@ int main(int argc, char *argv[]){
     //    1. defined symbols (we could find an external symbol with object file, section, offset)
     //    2. undefined but sized symbols, these go into the .bss section later
     //    3. dll-imports
-    //    4. special symbols like __ImageBase
-    //    5. Undefined symbols (errors)
+    //    4. Undefined symbols (errors)
     // 
     
     struct dll_list dlls = {0};
@@ -935,63 +885,159 @@ int main(int argc, char *argv[]){
     u64 bss_size = 0;
     u64 size_of_name_hint_table = 0;
     
+    u32 dllimport_thunk_count = 0;
+    
     for(u32 table_index = 0; table_index < external_symbols_capacity; table_index++){
         struct external_symbol *symbol = &external_symbols[table_index];
         if(!symbol->name.data) continue;
         
-        if(!symbol->is_defined && !symbol->size){
-            
-            if((symbol->name.size > sizeof("__imp_") - 1) && strncmp(symbol->name.data, "__imp_", sizeof("__imp_") - 1) == 0){
-                
-                if(symbol->name.size == 8){
-                    // Make sure the string is zero-terminated.
-                    char *new_data = push_array(&arena, char, 9);
-                    memcpy(new_data, symbol->name.data, 8);
-                    new_data[8] = 0;
-                    symbol->name.data = new_data;
-                }
-                
-                char *cstring_symbol_name = symbol->name.data + sizeof("__imp_") - 1;
-                
-                u16 hint = 0;
-                struct dll_import_node *dll = 0;
-                for(u32 ar_index = 0; ar_index < amount_of_ar_files; ar_index++){
-                    struct ar_file *ar = &ar_files[ar_index];
-                    
-                    dll = ar_lookup_symbol(&dlls, &arena, ar, cstring_symbol_name, &hint);
-                    if(dll) break;
-                }
-                
-                if(!dll){
-                    print("Error: '%.*s' is not contained in any of the import libraries.\n", symbol->name.size, symbol->name.data);
-                    reference_to_undefined_symbol = 1;
-                    continue;
-                }
-                
-                // This symbol is a dllimport.
-                symbol->is_dllimport = 1;
-                symbol->dllimport_index = dll->dllimport_index++;
-                symbol->dll = dll;
-                symbol->hint = hint;
-                
-                u32 symbol_size = symbol->name.size - (sizeof("__imp_") - 1);
-                
-                size_of_name_hint_table += 2 + (symbol_size + 1) + ((symbol_size + 1) & 1);
-            }else if(string_match(symbol->name, string("__ImageBase"))){
-                symbol->is_ImageBase = 1;
-            }else{
-                print("Error: Symbol '%.*s' was used but never defined.\n", symbol->name.size, symbol->name.data);
-                reference_to_undefined_symbol = 1;
-            }
-        }
+        // Defined symbols are fine.
+        if(symbol->is_defined) continue;
         
-        if(!symbol->is_defined){
+        // Symbols which have a size are added to the .bss section.
+        if(symbol->size){
             symbol->offset = bss_size;
             bss_size += symbol->size;
             if(bss_size > 0xffffffff){
                 print("Error: The combined size of all uninitialized variables exceeds 32-bit.\n");
                 return 1;
             }
+            continue;
+        }
+        
+        // Ignore the special __ImageBase symbol.
+        if(symbol->is_ImageBase) continue;
+        
+        // 
+        // We have found an unresolved symbol, look it up in the library files.
+        // 
+        
+        if(symbol->name.size == 8){
+            // Make sure the string is zero-terminated.
+            char *new_data = push_array(&arena, char, 9);
+            memcpy(new_data, symbol->name.data, 8);
+            new_data[8] = 0;
+            symbol->name.data = new_data;
+        }
+        
+        struct file symbol_object_file = {0};
+        
+        for(u32 ar_index = 0; ar_index < amount_of_ar_files; ar_index++){
+            struct ar_file *ar = &ar_files[ar_index];
+            
+            symbol_object_file = ar_lookup_symbol(ar, symbol->name.data);
+            if(symbol_object_file.memory) break;
+        }
+        
+        if(!symbol_object_file.memory){
+            print("Error: Symbol '%.*s' was used but never defined.\n", symbol->name.size, symbol->name.data);
+            reference_to_undefined_symbol = 1;
+            continue;
+        }
+        
+        // 
+        // @cleanup: Length checks.
+        // 
+        
+        u16 signature_1 = *(u16 *)symbol_object_file.memory;
+        u16 signature_2 = *(u16 *)(symbol_object_file.memory + 2);
+        
+        if(signature_1 == 0 && signature_2 == 0xffff){
+            // This is an import header.
+            
+            u8 *file_data = symbol_object_file.memory;
+            u64 file_size = symbol_object_file.size;
+            
+            // Layout: 
+            //    ar_import_header
+            //    identifier (symbol)
+            //    dll_name
+            // 
+            
+            struct ar_import_header{
+                u16 signature_1;
+                u16 signature_2;
+                u16 version;
+                u16 machine;
+                u32 time_date_stamp;
+                u32 size_of_data;
+                u16 ordinal_hint;
+                u16 type : 2;      // 0 - code, 1 - data, 2 - const
+                u16 name_type : 3; // 0 - ordinal, 1 - name, 2 - noprefix, 3 - undecorated
+                u16 reserved : 11;
+            } *import_header = (void *)file_data;
+            
+            if(file_size < sizeof(*import_header) || file_data[file_size-1] != 0){
+                print("Error: Bad import symbol for '%s'.\n", symbol->name.data);
+                return 1;
+            }
+            
+            if(import_header->name_type != 1){
+                print("Error: Symbol '%s' has unsupported import name type.\n", symbol->name.data);
+                return 1;
+            }
+            
+            u16 hint = import_header->ordinal_hint;
+            
+            char *identifier = (char *)(import_header + 1);
+            char *dll_name   = identifier + strlen(identifier) + 1;
+            if(dll_name >= (char *)(file_data + file_size)){ 
+                print("Error: Bad import symbol for '%s'.\n", symbol->name.data);
+                return 1;
+            }
+            
+            struct dll_import_node *dll = 0;
+            
+            for(struct dll_import_node *it = dlls.first; it; it = it->next){
+                if(strcmp(it->name, dll_name) == 0){
+                    dll = it;
+                    break;
+                }
+            }
+            
+            if(!dll){
+                dll = push_struct(&arena, struct dll_import_node);
+                dll->name = dll_name;
+                
+                if(dlls.first){
+                    dll->next = dlls.first;
+                    dlls.first = dll;
+                }else{
+                    dlls.first = dlls.last = dll;
+                }
+                dlls.size += 1;
+            }
+            
+            if(symbol->name.size >= sizeof("__imp_") - 1 && strncmp(symbol->name.data, "__imp_", sizeof("__imp_") -1) == 0){
+                // 
+                // This symbol is a dllimport.
+                // 
+                symbol->is_dllimport = 1;
+                symbol->dllimport_index = dll->dllimport_index++;
+                symbol->dll = dll;
+                symbol->hint = hint;
+                
+                u32 symbol_size = symbol->name.size - (sizeof("__imp_") - 1);
+                size_of_name_hint_table += 2 + (symbol_size + 1) + ((symbol_size + 1) & 1);
+            }else{
+                // 
+                // This symbol is a dllimport thunk.
+                // 
+                symbol->is_dllimport_thunk = 1;
+                symbol->dllimport_thunk_index = dllimport_thunk_count++;
+                symbol->dll = dll;
+                symbol->dllimport_index = dll->dllimport_index++; // For now we dont support importing both by __imp_ and without.
+                
+                u32 symbol_size = symbol->name.size;
+                size_of_name_hint_table += 2 + (symbol_size + 1) + ((symbol_size + 1) & 1);
+            }
+        }else{
+            // 
+            // This is an object file.
+            // 
+            
+            print("We are currently not supporting static linking (needed for symobl %s).\n", symbol->name.data);
+            return 1;
         }
     }
     
@@ -1255,6 +1301,36 @@ int main(int argc, char *argv[]){
         }
     }
     
+    
+    // 
+    // Allocate a .text section, if it does not already exist and we need space for the dllimport thunks.
+    // 
+    u32 dllimport_thunk_base = 0;
+    struct coff_section_header *image_text_section_header = 0;
+    
+    if(dllimport_thunk_count){
+        for(u64 index = 0; index < amount_of_image_sections; index++){
+            struct coff_section_header *section_header = &image_sections[index];
+            if(strncmp(section_header->name, ".text", 8) == 0){
+                image_text_section_header = section_header;
+                break;
+            }
+        } 
+        
+        if(!image_text_section_header){
+            image_text_section_header = push_struct(&arena, struct coff_section_header);
+            memcpy(image_text_section_header->name, ".text\0\0\0", 8);
+            image_text_section_header->characteristics  = 0x60000020;
+            
+            amount_of_image_sections++;
+        }
+        
+        image_text_section_header->size_of_raw_data = (image_text_section_header->size_of_raw_data + 1) & ~3;
+        dllimport_thunk_base = image_text_section_header->size_of_raw_data;
+        
+        image_text_section_header->size_of_raw_data += 6 * dllimport_thunk_count;
+    }
+    
     // 
     // Allocate a .rdata section, if it does not already exist and we need space for the dllimports.
     // We also need space for the debug directory and the RSDS debug data.
@@ -1445,7 +1521,7 @@ int main(int argc, char *argv[]){
         
         for(u32 table_index = 0; table_index < external_symbols_capacity; table_index++){
             struct external_symbol *symbol = &external_symbols[table_index];
-            if(!symbol->is_dllimport) continue;
+            if(!symbol->is_dllimport && !symbol->is_dllimport_thunk) continue;
             
             u32 name_hint_table_entry_rva = name_hint_table_rva + name_hint_table_entry_offset_at;
             symbol->dll->import_lookup_table[symbol->dllimport_index] = name_hint_table_entry_rva;
@@ -1454,10 +1530,11 @@ int main(int argc, char *argv[]){
             u16 *hint = (u16 *)(name_hint_table_base + name_hint_table_entry_offset_at + 0);
             u8  *name =        (name_hint_table_base + name_hint_table_entry_offset_at + 2);
             
-            struct string non_import_name = {
-                .data = symbol->name.data + (sizeof("__imp_") - 1),
-                .size = symbol->name.size - (sizeof("__imp_") - 1),
-            };
+            struct string non_import_name = symbol->name;
+            if(!symbol->is_dllimport_thunk){
+                non_import_name.data += sizeof("__imp_") - 1;
+                non_import_name.size -= sizeof("__imp_") - 1;
+            }
             
             *hint = symbol->hint;
             memcpy(name, non_import_name.data, non_import_name.size);
@@ -1468,6 +1545,30 @@ int main(int argc, char *argv[]){
         optional_header->data_directory[1].virtual_address = dllimport_information_relative_virtual_address;
         optional_header->data_directory[1].size            = dllimport_information_size;
     }
+    
+    if(dllimport_thunk_count){
+        // 
+        // Write in the dllimport thunk table.
+        // 
+        u8 *thunk_table_base = image_base + image_text_section_header->pointer_to_raw_data + dllimport_thunk_base;
+        u32 thunk_table_relative_virtual_address = image_text_section_header->virtual_address + dllimport_thunk_base;
+        
+        for(u32 table_index = 0; table_index < external_symbols_capacity; table_index++){
+            struct external_symbol *symbol = &external_symbols[table_index];
+            if(!symbol->is_dllimport_thunk) continue;
+            
+            u8 *thunk = thunk_table_base + 6 * symbol->dllimport_thunk_index;
+            
+            thunk[0] = 0xff; thunk[1] = 0x25;
+            u32 *offset = (u32 *)(thunk + 2);
+            
+            u32 rip_rva  = (thunk_table_relative_virtual_address + 6 * symbol->dllimport_thunk_index + 6);
+            u32 dest_rva = symbol->dll->import_address_table_relative_virtual_address + 8 * symbol->dllimport_index;
+            
+            *offset = dest_rva - rip_rva;
+        }
+    }
+    
     
     // @cleanup: we could get a more precise time here.
     struct pdb_guid pdb_guid = { time(NULL), 0x1337, 0x1337, 0x13, 0x37, 0x13, 0x37, 0x13, 0x37, 0x13, 0x37};
@@ -1599,12 +1700,13 @@ int main(int argc, char *argv[]){
                     symbol_relative_virtual_address = image_section_header->virtual_address + offset_of_object_section_in_image_section + found->offset;
                     
                 }else if(found->is_dllimport){
-                    
                     // 
                     // Calculate the relative virtual address of the import address table entry.
                     // 
                     
                     symbol_relative_virtual_address = found->dll->import_address_table_relative_virtual_address + 8 * found->dllimport_index;
+                }else if(found->is_dllimport_thunk){
+                    symbol_relative_virtual_address = image_text_section_header->virtual_address + dllimport_thunk_base + 6 * found->dllimport_thunk_index;
                 }else if(found->is_ImageBase){
                     symbol_relative_virtual_address = 0;
                 }else{
@@ -1695,7 +1797,11 @@ int main(int argc, char *argv[]){
     optional_header->size_of_uninitialized_data = size_of_uninitialized_data;
     
     FILE *out = fopen("a.exe", "wb");
-    fwrite(image_base, image_physical_size, 1, out);
+    if(!out){
+        print("Error: Failed to open 'a.exe'.\n");
+    }else{
+        fwrite(image_base, image_physical_size, 1, out);
+    }
     
     struct write_pdb_per_object_information *per_object = push_array(&arena, struct write_pdb_per_object_information, amount_of_object_files);
     
@@ -1722,6 +1828,9 @@ int main(int argc, char *argv[]){
         struct section_information *debug_section_information = &debug_symbol_sections[section_index];
         struct coff_section_header *section_header = debug_section_information->section_header;
         struct object_file *object_file = debug_section_information->object_file;
+        
+        // @incomplete: For now skip COMDAT .debug$S sections.
+        if(section_header->characteristics & /*IMAGE_SCN_LNK_COMDAT*/0x1000) continue;
         
         u32 size_of_raw_data    = section_header->size_of_raw_data;
         u32 pointer_to_raw_data = section_header->pointer_to_raw_data;

@@ -1828,8 +1828,6 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
             char module_name_and_file_name[];
         } **module_information_per_object_file = push_array(&arena, struct pdb_module_information *, write_pdb_information->amount_of_object_files);
         
-        struct pdb_module_information *linker_module = 0;
-        
         {
             // 
             // Module Information Substream.
