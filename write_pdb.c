@@ -426,7 +426,7 @@ struct codeview_public_symbol{
 
 u8 *global__base_of_the_symbol_record_stream_only_here_so_we_can_qsort;
 
-int compare_public_symbol_offsets(void *a, void *b){
+int compare_public_symbol_offsets(const void *a, const void *b){
     u8 *base = global__base_of_the_symbol_record_stream_only_here_so_we_can_qsort;
     struct codeview_public_symbol *a_symbol = (void *)(base + *(u32 *)a);
     struct codeview_public_symbol *b_symbol = (void *)(base + *(u32 *)b);
@@ -677,10 +677,7 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
             
             type_index_map_per_object_file[object_file_index].data = object_file_type_index_to_pdb_file_type_index_map;
             
-            struct codeview_type_record_header{
-                u16 length;
-                u16 kind;
-            } type_record_header;
+            struct codeview_type_record_header type_record_header;
             
             u32 object_file_type_index = 0x1000;
             
@@ -1787,7 +1784,7 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
         };
         
         struct public_symbol_hash_record{
-            struct pdb_loaded_hash_record *next;
+            struct public_symbol_hash_record *next;
             struct codeview_public_symbol *public_symbol;
         } *public_symbol_index[4096] = {0};
         

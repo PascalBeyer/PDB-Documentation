@@ -1,3 +1,4 @@
+#define _CRT_SECURE_NO_WARNINGS
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -24,9 +25,7 @@ typedef __int64 s64;
 #define array_count(a) (sizeof(a)/sizeof(*a))
 #define offset_in_type(type, member) (u64)(&((type *)0)->member)
 
-#include "memory_arena.c"
-
-__declspec(printlike) int print(char *format, ...){
+int print(char *format, ...){
     va_list va;
     va_start(va, format);
     int ret = vprintf(format, va);
@@ -36,38 +35,7 @@ __declspec(printlike) int print(char *format, ...){
     return ret;
 }
 
-void print_memory_range(void *_memory, u64 size, u64 offset){
-    
-    u8 *memory = _memory;
-    
-    for(u64 index = 0; index < size; index += 16){
-        print("%p: ", (char *)(offset + index));
-        
-        for(u64 column_index = 0; column_index < 16; column_index++){
-            if(index + column_index < size){
-                print("%.2x ", (u32)memory[index + column_index]);
-            }else{
-                print("   ");
-            }
-            
-            if(column_index == 7) print(" ");
-        }
-        
-        print(" ");
-        
-        for(u64 column_index = 0; column_index < 16; column_index++){
-            if(index + column_index < size){
-                u8 c = memory[index + column_index];
-                if(c < 32 || c >= 127) c = '.';
-                
-                print("%c", c);
-            }else{
-                print(" ");
-            }
-        }
-        print("\n");
-    }
-}
+#include "memory_arena.c"
 
 struct file{
     u8 *memory;
@@ -75,7 +43,7 @@ struct file{
 };
 
 struct file load_file(char *file_name){
-    struct file file = {};
+    struct file file = {0};
     
     FILE *handle = fopen(file_name, "rb");
     if(!handle) return file;
@@ -263,13 +231,16 @@ struct coff_section_header{
     u32 characteristics;
 };
 
+
+#ifdef __HLC__
+
+// This is for my compiler... I am leaving this here for now.
+
 struct __declspec(packed) coff_relocation {
     u32 relocation_address;
     u32 symbol_table_index;
     u16 relocation_type;
 };
-
-_Static_assert(sizeof(struct coff_relocation) == 10, "coff relocation size incorrect.");
 
 struct __declspec(packed) coff_symbol {
     union{
@@ -287,7 +258,40 @@ struct __declspec(packed) coff_symbol {
     u8 number_of_auxiliary_symbol_records;
 };
 
-_Static_assert(sizeof(struct coff_symbol) == 18, "coff symbol size incorrect.");
+
+#else
+
+#define _Static_assert(a, b) typedef int static_assert_declaration[(a) ? 1 : -1];
+
+#pragma pack(push, 1) 
+struct coff_relocation {
+    u32 relocation_address;
+    u32 symbol_table_index;
+    u16 relocation_type;
+};
+
+struct coff_symbol {
+    union{
+        char short_name[8];
+        struct{
+            u32 zeroes;
+            u32 offset;
+        } long_name;
+    };
+    
+    u32 value;
+    u16 section_number;
+    u16 symbol_type;
+    u8 storage_class;
+    u8 number_of_auxiliary_symbol_records;
+};
+#pragma pack(pop)
+
+#endif
+
+_Static_assert(sizeof(struct coff_relocation) == 10, "coff relocation size incorrect.");
+_Static_assert(sizeof(struct coff_symbol) == 18,     "coff symbol size incorrect.");
+
 
 struct object_file{
     char *file_name;
@@ -554,6 +558,12 @@ struct dll_import_node{
     u32 import_address_table_relative_virtual_address;
 };
 
+int strcmp_wrapper(const void *a, const void *b){
+    const char **_a = a;
+    const char **_b = b;
+    return strcmp(*_a, *_b);
+}
+
 struct file ar_lookup_symbol(struct ar_file *ar_file, char *symbol_name){
     
     struct file zero_file = {0};
@@ -567,18 +577,13 @@ struct file ar_lookup_symbol(struct ar_file *ar_file, char *symbol_name){
     //     struct ar_file_header *file_header = (void *)(file.data + member_offset);
     //     <parse the .obj or import-header>
     
-    int strcmp_wrapper(void *a, void *b){
-        char **_a = a;
-        char **_b = b;
-        return strcmp(*_a, *_b);
-    }
     
     char **found = bsearch(&symbol_name, ar_file->symbol_string_table, ar_file->amount_of_symbols, sizeof(*ar_file->symbol_string_table), strcmp_wrapper);
     if(!found) return zero_file;
     
     u32 symbol_index = (u32)(found - ar_file->symbol_string_table);
     u16 member_index = ar_file->symbol_member_indices[symbol_index];
-    if(member_index - 1 > ar_file->amount_of_members) return zero_file;
+    if((u32)(member_index - 1) > ar_file->amount_of_members) return zero_file;
     
     u32 member_offset = ar_file->member_offsets[member_index-1];
     
@@ -599,6 +604,16 @@ struct file ar_lookup_symbol(struct ar_file *ar_file, char *symbol_name){
     
     return (struct file){.memory = file_data, .size = file_size};
 }
+
+
+//_____________________________________________________________________________________________________________________
+// PDB includes
+
+#include "msf.c"
+#include "write_pdb.c"
+
+//_____________________________________________________________________________________________________________________
+// Helper functions
 
 struct string get_symbol_name(struct coff_symbol *symbol, struct object_file *object_file){
     u8 *string_table = object_file->string_table;
@@ -621,6 +636,30 @@ struct string get_symbol_name(struct coff_symbol *symbol, struct object_file *ob
     
     return (struct string){.data = name, .size = name_length };
 }
+
+struct section_information{
+    struct coff_section_header *section_header;
+    struct object_file *object_file;
+    struct coff_section_header *image_section_header;
+};
+
+int compare_sections_to_combine(const void *a, const void *b){
+    
+    const struct section_information *a_section_information = a;
+    const struct section_information *b_section_information = b;
+    
+    // Most importantly sort by name.
+    int diff = strncmp((char *)a_section_information->section_header->name, (char *)b_section_information->section_header->name, 8);
+    if(diff) return diff;
+    
+    // If the name is the same, prefer earlier object files.
+    diff = a_section_information->object_file - b_section_information->object_file;
+    if(diff) return diff;
+    
+    // Lastly, if they are also in the same object file, compare the section headers.
+    return a_section_information->section_header - b_section_information->section_header;
+}
+
 
 int main(int argc, char *argv[]){
     
@@ -684,7 +723,7 @@ int main(int argc, char *argv[]){
                     
                     char buffer[0x100];
                     if(end){
-                        snprintf(buffer, sizeof(buffer), "%.*s/%s", end - path, path, file_name);
+                        snprintf(buffer, sizeof(buffer), "%.*s/%s", (int)(end - path), path, file_name);
                         path = end + 1;
                     }else{
                         snprintf(buffer, sizeof(buffer), "%s/%s", path, file_name);
@@ -1070,11 +1109,7 @@ int main(int argc, char *argv[]){
         }
     }
     
-    struct section_information{
-        struct coff_section_header *section_header;
-        struct object_file *object_file;
-        struct coff_section_header *image_section_header;
-    } *sections_to_combine = push_array(&arena, struct section_information, 0);
+    struct section_information *sections_to_combine = push_array(&arena, struct section_information, 0);
     
     // 
     // Figure out all the sections which have to end up in the final executable.
@@ -1108,23 +1143,6 @@ int main(int argc, char *argv[]){
     //           so make sure not to allocate anything in `arena`,
     //           before we did that!
     // 
-    
-    int compare_sections_to_combine(void *a, void *b){
-        
-        struct section_information *a_section_information = a;
-        struct section_information *b_section_information = b;
-        
-        // Most importantly sort by name.
-        int diff = strncmp((char *)a_section_information->section_header->name, (char *)b_section_information->section_header->name, 8);
-        if(diff) return diff;
-        
-        // If the name is the same, prefer earlier object files.
-        diff = a_section_information->object_file - b_section_information->object_file;
-        if(diff) return diff;
-        
-        // Lastly, if they are also in the same object file, compare the section headers.
-        return a_section_information->section_header - b_section_information->section_header;
-    }
     
     // 
     // Sort the sections by name.

@@ -1,3 +1,4 @@
+#define _CRT_SECURE_NO_WARNINGS
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -22,7 +23,7 @@ typedef __int64 s64;
 
 #define offset_in_type(type, member) (u64)(&((type *)0)->member)
 
-__declspec(printlike) int print(char *format, ...){
+int print(char *format, ...){
     va_list va;
     va_start(va, format);
     int ret = vprintf(format, va);
@@ -30,39 +31,6 @@ __declspec(printlike) int print(char *format, ...){
     
     fflush(0);
     return ret;
-}
-
-void print_memory_range(void *_memory, u64 size, u64 offset){
-    
-    u8 *memory = _memory;
-    
-    for(u64 index = 0; index < size; index += 16){
-        print("%p: ", (char *)(offset + index));
-        
-        for(u64 column_index = 0; column_index < 16; column_index++){
-            if(index + column_index < size){
-                print("%.2x ", (u32)memory[index + column_index]);
-            }else{
-                print("   ");
-            }
-            
-            if(column_index == 7) print(" ");
-        }
-        
-        print(" ");
-        
-        for(u64 column_index = 0; column_index < 16; column_index++){
-            if(index + column_index < size){
-                u8 c = memory[index + column_index];
-                if(c < 32 || c >= 127) c = '.';
-                
-                print("%c", c);
-            }else{
-                print(" ");
-            }
-        }
-        print("\n");
-    }
 }
 
 u32 crc32(u32 initial_crc, u8 *data, u64 amount){
@@ -179,7 +147,7 @@ int compare_u32(const void *a, const void *b){
     return 0;
 }
 
-__declspec(printlike) __declspec(noreturn) void error(char *format, ...){
+__declspec(noreturn) void error(char *format, ...){
     va_list va;
     va_start(va, format);
     vprintf(format, va);
@@ -192,7 +160,7 @@ __declspec(printlike) __declspec(noreturn) void error(char *format, ...){
     _exit(1);
 }
 
-__declspec(printlike) char *format_string(char *format, ...){
+char *format_string(char *format, ...){
     va_list va, copy;
     va_start(va, format);
     va_copy(copy, va);
@@ -1279,7 +1247,7 @@ void pdb_validate(u8 *pdb_base, size_t pdb_file_size, int dump){
     // 
     // Validate the TPI and IPI stream.
     // 
-    for(u32 index_stream_index = 2; index_stream_index <= 2 + 2 * has_ipi_stream; index_stream_index += 2){
+    for(int index_stream_index = 2; index_stream_index <= 2 + 2 * has_ipi_stream; index_stream_index += 2){
         struct msf_stream index_stream = streams.streams[index_stream_index];
         
         int is_ipi = (index_stream_index == 4);
@@ -2701,7 +2669,7 @@ void pdb_validate(u8 *pdb_base, size_t pdb_file_size, int dump){
         }
         
         if(dump){
-            print("    [%u] = 0x%hx (%.8s), 0x%x, 0x%x, 0x%x, 0x%hx, 0x%x, 0x%x\n", section_contribution_index, contribution.section_id, section_table[contribution.section_id-1].name, contribution.offset, contribution.size, contribution.characteristics, contribution.module_index, contribution.data_crc, contribution.reloc_crc);
+            print("    [%u] = 0x%hx (%.8s), 0x%x, 0x%x, 0x%x, 0x%hx, 0x%x, 0x%x\n", section_contribution_index, contribution.section_id, section_table.data[contribution.section_id-1].name, contribution.offset, contribution.size, contribution.characteristics, contribution.module_index, contribution.data_crc, contribution.reloc_crc);
         }
         
         last_section_contribution = contribution;
@@ -4200,7 +4168,7 @@ struct file{
 };
 
 struct file load_file(char *file_name){
-    struct file file = {};
+    struct file file = {0};
     
     FILE *handle = fopen(file_name, "rb");
     if(!handle){

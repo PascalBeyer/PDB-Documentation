@@ -25,9 +25,10 @@ The validation utility tries to check as much about the PDB format as possible a
 ```
 link.exe /NODEFAULTLIB /ENTRY:_start /SUBSYSTEM:console /DYNAMICBASE:no /DEBUG:FULL,CTYPES <.obj-files> <.lib-files> /OUT:a.exe /PDB:a.pdb /PDBALTPATH:a.pdb
 ```
-for simple object files, compiled with for example using `cl.exe /c /GS- /Z7 <c-files>`.
+for simple object files, compiled with for example using `cl.exe /c /GS- /Z7 <c-files>` and import libraries.
+To compile the validation utility use `cl.exe validate.c` and to compile the linker use `cl.exe linker.c`.
 
-Note that all information in this repository is from XX.XX.XXXX and is might change when Microsoft updates their tools.
+Note that all information in this repository is from 01.10.2024 and is might change when Microsoft updates their tools.
 For reference, the MSVC version I am using is 19.28.29336.
 
 Any sample code inside the `Readme.md` is only intended to clarify the layout and algorithms used.
