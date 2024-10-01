@@ -36,27 +36,7 @@ For "tested" (but overly strict) parsing code see `validate.c` and for tested wr
 
 # Table of Contents
 
-<style>
-  .toc-container ul {
-    list-style: none; /* Remove default bullets */
-    padding-left: 1em; /* Optional: Adjust the indentation for nested lists */
-  }
-
-  .toc-container li {
-    margin-bottom: 5px; /* Add spacing between items */
-  }
-
-  .toc-container a {
-    text-decoration: none; /* Remove underline from links */
-    color: #0366d6; /* Optional: Set a custom color for links */
-  }
-
-  .toc-container a:hover {
-    text-decoration: underline; /* Add underline on hover for clarity */
-  }
-</style>
-
-<div class="toc-container">
+<div>
 
 <ul>
     <li><a href="#finding-the-pdb">Finding the PDB</a></li>
