@@ -37,57 +37,66 @@ For "tested" (but overly strict) parsing code see `validate.c` and for tested wr
 # Table of Contents
 
 <div id="TOC">
-
 <ul>
-    <li> [Finding the PDB](#finding-the-pdb)  
-    <li>[Multistream File (MSF)](#multistream-file-msf)  
+    <li><a href="#finding-the-pdb>Finding the PDB</a></li>
+    <li><a href="#multistream-file-msf>Multistream File (MSF)</a></li>
     <ul>
-        <li>[MSF file header](#msf-file-header)  
-        <li>[Stream Table Stream](#stream-table-stream)  
-        <li>[Old Stream Table Stream](#old-stream-table-stream)  
+        <li><a href="#msf-file-header>MSF file header</a></li>
+        <li><a href="#stream-table-stream>Stream Table Stream</a></li>
+        <li><a href="#old-stream-table-stream>Old Stream Table Stream</a></li>
     </ul>
-    <li>[PDB-Format](#pdb-format)  
-
-
-</div>
-
-	[Overview](#overview)  
-	[PDB Information stream](#pdb-information-stream)  
-	[/names Stream](#names-stream)  
-	[TPI Stream](#tpi-stream)  
-	[DBI Stream](#dbi-stream)  
-		[Module Information Substream](#module-information-substream)  
-		[Section Contribution Substream](#section-contribution-substream)  
-		[Section Map Substream](#section-map-substream)  
-		[Source Information Substream](#source-information-substream)  
-		[Type Server Map Substream](#type-server-map-substream)  
-		[Edit and Continue Substream](#edit-and-continue-substream)  
-		[Optional Debug Header Substream](#optional-debug-header-substream)  
-	[IPI Stream](#ipi-stream)  
-	[Module Symbol Streams](#module-symbol-streams)  
-		[Symbol Information](#symbol-information)  
-		[Line Information](#line-information)  
-		[Global References](#global-references)  
-	[Symbol Record Stream](#symbol-record-stream)  
-	[Global Symbol Index Stream (GSI)](#global-symbol-index-stream-gsi)  
-	 [Public Symbol Index Stream](#public-symbol-index-stream)  
-	 [Named streams](#named-streams)  
-		[/LinkInfo](#linkinfo)  
-		[/src/headerblock](#srcheaderblock)  
-		[/TMCache](#tmcache)  
-	[CodeView](#codeview)  
-		[CodeView Format Overview](#codeview-format-overview)  
-			[Type Indices](#type-indices)  
-			[Numeric leaves](#numeric-leaves)  
-			[Symbol Records](#symbol-records)  
-			[New CodeView Symbols](#new-codeview-symbols)  
-			[Old CodeView Symbols](#old-codeview-symbols)  
-		[CodeView Uses](#codeview-uses)  
-			[Object files (.obj)](#object-files-obj)  
-			[Type Server PDB](#type-server-pdb)  
-			[/DEBUG:FULL PDB](#debugfull-pdb)  
-			[/DEBUG:FASTLINK PDB](#debugfastlink-pdb)  
-
+    <li><a href="#pdb-format>PDB-Format</a></li>
+    <ul>
+        <li><a href="#overview>Overview</a></li>
+        <li><a href="#pdb-information-stream>PDB Information stream</a></li>
+        <li><a href="#names-stream>/names Stream</a></li>
+        <li><a href="#tpi-stream>TPI Stream</a></li>
+        <li><a href="#dbi-stream>DBI Stream</a></li>
+        <ul>
+            <li><a href="#module-information-substream>Module Information Substream</a></li>
+            <li><a href="#section-contribution-substream>Section Contribution Substream</a></li>
+            <li><a href="#section-map-substream>Section Map Substream</a></li>
+            <li><a href="#source-information-substream>Source Information Substream</a></li>
+            <li><a href="#type-server-map-substream>Type Server Map Substream</a></li>
+            <li><a href="#edit-and-continue-substream>Edit and Continue Substream</a></li>
+            <li><a href="#optional-debug-header-substream>Optional Debug Header Substream</a></li>
+        </ul>
+        <li><a href="#ipi-stream>IPI Stream</a></li>
+        <li><a href="#module-symbol-streams>Module Symbol Streams</a></li>
+        <ul>
+            <li><a href="#symbol-information>Symbol Information</a></li>
+            <li><a href="#line-information>Line Information</a></li>
+            <li><a href="#global-references>Global References</a></li>
+        </ul>
+        <li><a href="#symbol-record-stream>Symbol Record Stream</a></li>
+        <li><a href="#global-symbol-index-stream-gsi>Global Symbol Index Stream (GSI)</a></li>
+        <li><a href="#public-symbol-index-stream>Public Symbol Index Stream</a></li>
+        <li><a href="#named-streams>Named streams</a></li>
+        <ul>
+            <li><a href="#linkinfo>/LinkInfo</a></li>
+            <li><a href="#srcheaderblock>/src/headerblock</a></li>
+            <li><a href="#tmcache>/TMCache</a></li>
+        </ul>
+        <li><a href="#codeview>CodeView</a></li>
+        <ul>
+            <li><a href="#codeview-format-overview>CodeView Format Overview</a></li>
+            <ul>
+                <li><a href="#type-indices>Type Indices</a></li>
+                <li><a href="#numeric-leaves>Numeric leaves</a></li>
+                <li><a href="#symbol-records>Symbol Records</a></li>
+                <li><a href="#new-codeview-symbols>New CodeView Symbols</a></li>
+                <li><a href="#old-codeview-symbols>Old CodeView Symbols</a></li>
+            </ul>
+            <li><a href="#codeview-uses>CodeView Uses</a></li>
+            </ul>
+                <li><a href="#object-files-obj>Object files (.obj)</a></li>
+                <li><a href="#type-server-pdb>Type Server PDB</a></li>
+                <li><a href="#debugfull-pdb>/DEBUG:FULL PDB</a></li>
+                <li><a href="#debugfastlink-pdb>/DEBUG:FASTLINK PDB</a></li>
+            </ul>
+        </ul>
+    </ul>
+</ul>
 </div>
 
 # Finding the PDB
