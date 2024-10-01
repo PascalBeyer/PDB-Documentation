@@ -36,12 +36,21 @@ For "tested" (but overly strict) parsing code see `validate.c` and for tested wr
 
 # Table of Contents
 
-[Finding the PDB](#finding-the-pdb)  
-[Multistream File (MSF)](#multistream-file-msf)  
-	[MSF file header](#msf-file-header)  
-	[Stream Table Stream](#stream-table-stream)  
-	[Old Stream Table Stream](#old-stream-table-stream)  
-[PDB-Format](#pdb-format)  
+<div id="TOC">
+
+<ul>
+    <li> [Finding the PDB](#finding-the-pdb)  
+    <li>[Multistream File (MSF)](#multistream-file-msf)  
+    <ul>
+        <li>[MSF file header](#msf-file-header)  
+        <li>[Stream Table Stream](#stream-table-stream)  
+        <li>[Old Stream Table Stream](#old-stream-table-stream)  
+    </ul>
+    <li>[PDB-Format](#pdb-format)  
+
+
+</div>
+
 	[Overview](#overview)  
 	[PDB Information stream](#pdb-information-stream)  
 	[/names Stream](#names-stream)  
@@ -78,7 +87,9 @@ For "tested" (but overly strict) parsing code see `validate.c` and for tested wr
 			[Type Server PDB](#type-server-pdb)  
 			[/DEBUG:FULL PDB](#debugfull-pdb)  
 			[/DEBUG:FASTLINK PDB](#debugfastlink-pdb)  
-	
+
+</div>
+
 # Finding the PDB
 
 PDBs are used by debuggers for type, symbol, file and line information. 
