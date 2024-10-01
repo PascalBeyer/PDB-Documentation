@@ -22,6 +22,7 @@ typedef __int64 s64;
 #define giga_bytes(a) ((mega_bytes(a)) * 1024ULL)
 
 #define array_count(a) (sizeof(a)/sizeof(*a))
+#define offset_in_type(type, member) (u64)(&((type *)0)->member)
 
 #include "memory_arena.c"
 
@@ -749,6 +750,7 @@ int main(int argc, char *argv[]){
         struct external_symbol *image_base_symbol = &external_symbols[dbj2("__ImageBase", sizeof("__ImageBase") - 1) & (external_symbols_capacity - 1)];
         image_base_symbol->name = string("__ImageBase");
         image_base_symbol->is_ImageBase = 1;
+        external_symbols_size += 1;
     }
     
     for(u32 object_file_index = 0; object_file_index < amount_of_object_files; object_file_index++){
@@ -1859,6 +1861,57 @@ int main(int argc, char *argv[]){
         section_contributions[section_index].characteristics = image_section->characteristics;
     }
     
+    u8 *public_symbols_start = memory_arena_allocate_bytes(&arena, 0, 4);
+    
+    for(u32 symbol_index = 0; symbol_index < external_symbols_capacity; symbol_index++){
+        struct external_symbol *symbol = &external_symbols[symbol_index];
+        if(!symbol->name.data) continue;
+        
+        u64 size_to_allocate = (offset_in_type(struct codeview_public_symbol, name) + (symbol->name.size + 1) + 3) & ~3;
+        struct codeview_public_symbol *public_symbol = memory_arena_allocate_bytes(&arena, size_to_allocate, 1);
+        public_symbol->header.kind = /*S_PUB32*/0x110e;
+        public_symbol->header.length = (u16)(size_to_allocate - sizeof(public_symbol->header.length));
+        public_symbol->flags = 0; // @cleanup: We don't use the function flag.
+        
+        if(symbol->is_defined){
+            struct object_file *external_symbol_object_file = &object_files[symbol->object_file_index];
+            struct coff_section_header *source_object_section = &external_symbol_object_file->section_headers[symbol->section_number-1]; // @note: One-based.
+            
+            u32 offset_of_object_section_in_image_section = source_object_section->virtual_address;
+            u32 symbol_image_section_index = source_object_section->pointer_to_line_numbers; // @note: We store this index in this useless field.
+            
+            struct coff_section_header *image_section_header = &image_sections[symbol_image_section_index];
+            
+            public_symbol->flags |= (image_section_header->characteristics & /*IMAGE_SCN_CNT_CODE*/0x00000020) ? 1 : 0;
+            public_symbol->section_id = symbol_image_section_index + /*one-based*/1;
+            public_symbol->offset_in_section = offset_of_object_section_in_image_section + symbol->offset;
+        }else if(symbol->is_dllimport){
+            
+            public_symbol->section_id = (image_rdata_section_header - image_sections) + /*one-based*/1;
+            public_symbol->offset_in_section = symbol->dll->import_address_table_relative_virtual_address + 8 * symbol->dllimport_index - image_rdata_section_header->virtual_address;
+        }else if(symbol->is_dllimport_thunk){
+            public_symbol->flags |= /*code*/1;
+            public_symbol->section_id = (image_text_section_header - image_sections) + /*one-based*/1;
+            public_symbol->offset_in_section = dllimport_thunk_base + 6 * symbol->dllimport_thunk_index;
+        }else if(symbol->is_ImageBase){
+            /*Weird symbol, has everything as 0.*/
+        }else{
+            public_symbol->section_id = (image_bss_section_header - image_sections) + /*one-based*/1;
+            public_symbol->offset_in_section = uninitialized_externals_bss_start + symbol->offset;
+        }
+        
+        // Write in the name.
+        memcpy(public_symbol->name, symbol->name.data, symbol->name.size);
+        public_symbol->name[symbol->name.size] = 0;
+        
+        u8 *padding = (u8 *)public_symbol->name + symbol->name.size + 1;
+        for(u32 index = symbol->name.size + 1; index < size_to_allocate; index++){
+            padding[index] = 0xf0 + (size_to_allocate - index);
+        }
+    }
+    
+    u64 public_symbols_size = (u8 *)memory_arena_allocate_bytes(&arena, 0, 4) - public_symbols_start;
+    
     struct write_pdb_information write_pdb_information = {0};
     write_pdb_information.pdb_guid = pdb_guid;
     write_pdb_information.amount_of_object_files = amount_of_object_files;
@@ -1867,6 +1920,9 @@ int main(int argc, char *argv[]){
     write_pdb_information.amount_of_section_contributions = amount_of_sections_to_combine;
     write_pdb_information.amount_of_image_sections = amount_of_image_sections;
     write_pdb_information.image_section_headers = image_sections;
+    write_pdb_information.public_symbols = public_symbols_start;
+    write_pdb_information.public_symbols_size = public_symbols_size;
+    write_pdb_information.amount_of_public_symbols = external_symbols_size;
     
     write_pdb(&write_pdb_information);
     

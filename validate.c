@@ -3646,7 +3646,7 @@ void pdb_validate(u8 *pdb_base, size_t pdb_file_size, int dump){
         u32 amount_of_address_map_entries = public_symbol_index_stream_header.address_map_byte_size / sizeof(u32);
         if(amount_of_address_map_entries != amount_of_public_symbols){
             char *less_more = (amount_of_address_map_entries < amount_of_public_symbols) ? "less" : "more";
-            error("Error: The adderss map inside public symbol index stream contains %s entries (%u) than there are public symbols (%u).", less_more, amount_of_address_map_entries, amount_of_public_symbols);
+            error("Error: The address map inside public symbol index stream contains %s entries (%u) than there are public symbols (%u).", less_more, amount_of_address_map_entries, amount_of_public_symbols);
         }
         
         {
@@ -4014,7 +4014,7 @@ void pdb_validate(u8 *pdb_base, size_t pdb_file_size, int dump){
                     
                     if(start == 0xffffffff) continue;
                     
-                    print("    [%u] bucket offset 0x%x: ", bucket_index, start);
+                    print("    [%u] bucket start index %u, end index %u: ", bucket_index, start, end);
                     for(u32 record_index = start; record_index < end; record_index++){
                         struct pdb_serialized_hash_record hash_record = hash_records[record_index];
                         char *name = pdb_symbol_record__get_name(symbol_record_stream.data + hash_record.symbol_offset_plus_one - 1);

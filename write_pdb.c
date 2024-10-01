@@ -31,14 +31,10 @@ enum pdb_stream{
     PDB_STREAM_section_header_dump,
     
     PDB_STREAM_symbol_record,
-    
     PDB_STREAM_global_symbol_index,
-    
-    PDB_CURRENT_AMOUNT_OF_STREAMS, // @incomplete:
-    
     PDB_STREAM_public_symbol_index,
     
-    PDB_STREAM_module_symbol_stream_base = PDB_CURRENT_AMOUNT_OF_STREAMS, // @cleanup:
+    PDB_STREAM_module_symbol_stream_base,
 };
 
 // For reference see `HashPbCb` in `microsoft-pdb/PDB/include/misc.h`.
@@ -416,6 +412,32 @@ u32 tpi_hash_table_index_for_record(struct codeview_type_record_header *type_rec
     return hash_index;
 }
 
+
+struct codeview_public_symbol{
+    struct codeview_symbol_header{
+        u16 length;
+        u16 kind;
+    } header;
+    u32 flags;
+    u32 offset_in_section;
+    u16 section_id;
+    char name[];
+};
+
+u8 *global__base_of_the_symbol_record_stream_only_here_so_we_can_qsort;
+
+int compare_public_symbol_offsets(void *a, void *b){
+    u8 *base = global__base_of_the_symbol_record_stream_only_here_so_we_can_qsort;
+    struct codeview_public_symbol *a_symbol = (void *)(base + *(u32 *)a);
+    struct codeview_public_symbol *b_symbol = (void *)(base + *(u32 *)b);
+    
+    if(a_symbol->section_id != b_symbol->section_id) return a_symbol->section_id - b_symbol->section_id;
+    if(a_symbol->offset_in_section != b_symbol->offset_in_section) return (int)a_symbol->offset_in_section - (int)b_symbol->offset_in_section;
+    
+    return strcmp(a_symbol->name, b_symbol->name);
+}
+
+
 struct pdb_section_contribution{
     s16 section_id;
     u16 padding1;
@@ -449,6 +471,10 @@ struct write_pdb_information{
     
     u16 amount_of_image_sections;
     struct coff_section_header *image_section_headers;
+    
+    u8 *public_symbols;
+    u64 public_symbols_size;
+    u64 amount_of_public_symbols;
 };
 
 void write_pdb(struct write_pdb_information *write_pdb_information){
@@ -1097,7 +1123,7 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
         }
     }
     
-    u64 amount_of_streams = PDB_CURRENT_AMOUNT_OF_STREAMS + write_pdb_information->amount_of_object_files;
+    u64 amount_of_streams = PDB_STREAM_module_symbol_stream_base + write_pdb_information->amount_of_object_files;
     struct msf_stream *streams = push_array(&arena, struct msf_stream, amount_of_streams);
     
     struct memory_arena symbol_record_stream = create_memory_arena(giga_bytes(8));
@@ -1218,22 +1244,27 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
                         case /*S_LABEL32*/0x1105: break;
                         
                         case /*S_CONSTANT*/0x1107:{
-                            if(symbol_size < 6) break;
+                            
+                            if(symbol_size < 6)break;
                             
                             u32 *type_index = (u32 *)symbol_data;
                             remap_type_index(*type_index);
                             
                             // If we are at a local scope, simply copy the thing out.
-                            if(level) break;
+                            if(level)break;
                             
                             // Parse the numeric leaf to get to the name.
                             int numeric_leaf_size = pdb_numeric_leaf_size_or_error(*(u16 *)(symbol_data + 4));
-                            if((numeric_leaf_size < 0) || (symbol_size < 6 + numeric_leaf_size)) break;
+                            if((numeric_leaf_size < 0) || (symbol_size < 4 + numeric_leaf_size)){
+                                break;
+                            }
                             
                             // Get the symbol name.
-                            symbol_name = (char *)(symbol_data + 6 + numeric_leaf_size);
-                            symbol_name_length = strnlen(symbol_name, symbol_size - (6 + numeric_leaf_size));
-                            if(symbol_name_length + 6 + numeric_leaf_size == symbol_size) break; // not zero-terminated?
+                            symbol_name = (char *)(symbol_data + 4 + numeric_leaf_size);
+                            symbol_name_length = strnlen(symbol_name, symbol_size - (4 + numeric_leaf_size));
+                            if(symbol_name_length + 4 + numeric_leaf_size == symbol_size){
+                                break; // not zero-terminated?
+                            }
                             
                             // Skip the symbol, if we actually need it, we add it in the fallback later.
                             skip_copy_out = 1;
@@ -1443,6 +1474,7 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
                             reference_symbol->offset_in_module_symbol_stream = (u32)(arena_current(&module_symbol_stream) - module_symbol_stream.base);
                             reference_symbol->module_index = object_file_index + 1; // These module id's are one-based for some reason.
                             memcpy(reference_symbol->name, symbol_name, symbol_name_length);
+                            reference_symbol->name[symbol_name_length] = 0;
                             
                             u8 *padding = (u8 *)reference_symbol + reference_symbol_length;
                             for(u32 index = 0; index < reference_symbol_alignment; index++){
@@ -1737,6 +1769,124 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
         *bucket_information_byte_size = (u32)(arena_current(&gsi_stream) - (u8 *)bucket_present_bitmap);
     }
     
+    struct memory_arena psi_stream = create_memory_arena(giga_bytes(8));
+    {
+        // 
+        // Create the public symbol hash table.
+        // 
+        
+        struct codeview_public_symbol{
+            struct codeview_symbol_header{
+                u16 length;
+                u16 kind;
+            } header;
+            u32 flags;
+            u32 offset_in_section;
+            u16 section_id;
+            char name[];
+        };
+        
+        struct public_symbol_hash_record{
+            struct pdb_loaded_hash_record *next;
+            struct codeview_public_symbol *public_symbol;
+        } *public_symbol_index[4096] = {0};
+        
+        u64 amount_of_public_symbols = write_pdb_information->amount_of_public_symbols;
+        u64 public_symbols_size = write_pdb_information->public_symbols_size;
+        u8 *public_symbols = push_array(&symbol_record_stream, u8, public_symbols_size);
+        memcpy(public_symbols, write_pdb_information->public_symbols, public_symbols_size);
+        
+        for(u64 offset = 0; offset < public_symbols_size;){
+            struct codeview_public_symbol *public_symbol = (void *)(public_symbols + offset);
+            char *name = public_symbol->name;
+            u16 hash_index = (u16)pdb_hash_index((u8 *)name, strlen(name), array_count(public_symbol_index));
+            
+            struct public_symbol_hash_record *hash_record = push_struct(&arena, struct public_symbol_hash_record);
+            hash_record->next = public_symbol_index[hash_index];
+            hash_record->public_symbol = public_symbol;
+            public_symbol_index[hash_index] = hash_record;
+            
+            offset += public_symbol->header.length + sizeof(public_symbol->header.length);
+        }
+        
+        struct public_symbol_index_stream_header{
+            u32 hash_table_information_bytes_size;
+            
+            u32 address_map_byte_size;
+            
+            // We are not incrementally linking, hence all of this stuff is zero.
+            u32 number_of_thunks;
+            u32 thunk_bytes_size;
+            u16 thunk_table_section_id;
+            u16 padding;
+            u32 thunk_table_offset_in_section;
+            u32 number_of_sections_in_thunk_section_map;
+        } *public_symbol_stream_header = push_struct(&psi_stream, struct public_symbol_index_stream_header);
+        
+        u8 *hash_table_information_start = arena_current(&psi_stream);
+        {
+            // 
+            // Immediately following the header, there is a variant of the global symbol index stream 
+            // used to map "symbol names" to S_PUB32-symbol records.
+            // 
+            *push_struct(&psi_stream, u32) = /*version_signature*/(u32)-1;
+            *push_struct(&psi_stream, u32) = /*version*/0xeffe0000 + 19990810;
+            
+            *push_struct(&psi_stream, u32) = /*hash_record_byte_size*/amount_of_public_symbols * 8;
+            
+            u32 *bucket_information_byte_size = push_struct(&psi_stream, u32);
+            
+            struct pdb_hash_record{
+                u32 offset_in_symbol_record_stream_plus_one;
+                u32 reference_counter;
+            } *hash_records = push_array(&psi_stream, struct pdb_hash_record, amount_of_public_symbols);
+            
+            u32 *bucket_present_bitmap = push_array(&psi_stream, u32, (array_count(public_symbol_index)/32) + 1);
+            
+            u32 current_record_index = 0;
+            for(u32 bucket_index = 0; bucket_index < array_count(public_symbol_index); bucket_index++){
+                
+                struct public_symbol_hash_record *record = public_symbol_index[bucket_index];
+                
+                if(record){
+                    u32 bitmap_index = (bucket_index / 32);
+                    u32 bit_index    = (bucket_index % 32);
+                    
+                    bucket_present_bitmap[bitmap_index] |= (1u << bit_index);
+                    
+                    u32 *hash_record_offset = push_struct(&psi_stream, u32);
+                    *hash_record_offset = current_record_index * 12; // This * 12 comes form the weird offset fixup they do.
+                }
+                
+                for(; record; record = record->next){
+                    struct pdb_hash_record *serialized_record = &hash_records[current_record_index++];
+                    serialized_record->offset_in_symbol_record_stream_plus_one = ((u8 *)record->public_symbol - symbol_record_stream.base) + 1;
+                    serialized_record->reference_counter = 1;
+                }
+            }
+            *bucket_information_byte_size = (u32)(arena_current(&psi_stream) - (u8 *)bucket_present_bitmap);
+        }
+        
+        public_symbol_stream_header->hash_table_information_bytes_size = arena_current(&psi_stream) - hash_table_information_start;
+        public_symbol_stream_header->address_map_byte_size = amount_of_public_symbols * sizeof(u32);
+        
+        u32 *address_map = push_array(&psi_stream, u32, amount_of_public_symbols);
+        for(u64 offset = 0, symbol_index = 0; offset < public_symbols_size; symbol_index++){
+            struct codeview_public_symbol *public_symbol = (void *)(public_symbols + offset);
+            
+            u32 offset_in_symbol_record_stream = (u32)((u8 *)public_symbol - symbol_record_stream.base);
+            address_map[symbol_index] = offset_in_symbol_record_stream;
+            
+            offset += public_symbol->header.length + sizeof(public_symbol->header.length);
+        }
+        
+        global__base_of_the_symbol_record_stream_only_here_so_we_can_qsort = symbol_record_stream.base;
+        qsort(address_map, amount_of_public_symbols, sizeof(*address_map), compare_public_symbol_offsets);
+        
+        
+        
+    }
+    
     struct memory_arena dbi_stream = create_memory_arena(giga_bytes(8));
     {
         // 
@@ -1784,7 +1934,7 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
         dbi_stream_header->age = 1;
         
         dbi_stream_header->stream_index_of_the_global_symbol_index_stream = PDB_STREAM_global_symbol_index;
-        dbi_stream_header->stream_index_of_the_public_symbol_index_stream = (u16)-1;
+        dbi_stream_header->stream_index_of_the_public_symbol_index_stream = PDB_STREAM_public_symbol_index;
         dbi_stream_header->stream_index_of_the_symbol_record_stream = PDB_STREAM_symbol_record;
         
         // @cleanup: check these?
@@ -1932,7 +2082,7 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
             // 
             u8 *source_information_substream_start = arena_current(&dbi_stream);
             
-            u16 amount_of_modules = (u16)(write_pdb_information->amount_of_object_files + 1);
+            u16 amount_of_modules = (u16)write_pdb_information->amount_of_object_files;
             
             *push_struct(&dbi_stream, u16) = amount_of_modules;
             *push_struct(&dbi_stream, u16) = /* truncated_amount_of_source_files */0;
@@ -2070,6 +2220,9 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
     
     streams[PDB_STREAM_global_symbol_index].data = gsi_stream.base;
     streams[PDB_STREAM_global_symbol_index].size = arena_current(&gsi_stream) - gsi_stream.base;
+    
+    streams[PDB_STREAM_public_symbol_index].data = psi_stream.base;
+    streams[PDB_STREAM_public_symbol_index].size = arena_current(&psi_stream) - psi_stream.base;
     
     
     // @note: The 0-th stream is added by the write_msf function implicitly.
