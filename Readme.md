@@ -36,8 +36,6 @@ For "tested" (but overly strict) parsing code see `validate.c` and for tested wr
 
 # Table of Contents
 
-<div class="toc-container">
-
 <style>
   .toc-container ul {
     list-style: none; /* Remove default bullets */
@@ -57,6 +55,8 @@ For "tested" (but overly strict) parsing code see `validate.c` and for tested wr
     text-decoration: underline; /* Add underline on hover for clarity */
   }
 </style>
+
+<div class="toc-container">
 
 <ul>
     <li><a href="#finding-the-pdb">Finding the PDB</a></li>
