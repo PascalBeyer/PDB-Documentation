@@ -36,68 +36,81 @@ For "tested" (but overly strict) parsing code see `validate.c` and for tested wr
 
 # Table of Contents
 
-<div id="TOC">
+<div>
 
-<ul>
-    <li><a href="#finding-the-pdb">Finding the PDB</a></li>
-    <li><a href="#multistream-file-msf">Multistream File (MSF)</a></li>
-    <ul>
-        <li><a href="#msf-file-header">MSF file header</a></li>
-        <li><a href="#stream-table-stream">Stream Table Stream</a></li>
-        <li><a href="#old-stream-table-stream">Old Stream Table Stream</a></li>
-    </ul>
-    <li><a href="#pdb-format">PDB-Format</a></li>
-    <ul>
-        <li><a href="#overview">Overview</a></li>
-        <li><a href="#pdb-information-stream">PDB Information stream</a></li>
-        <li><a href="#names-stream">/names Stream</a></li>
-        <li><a href="#tpi-stream">TPI Stream</a></li>
-        <li><a href="#dbi-stream">DBI Stream</a></li>
-        <ul>
-            <li><a href="#module-information-substream">Module Information Substream</a></li>
-            <li><a href="#section-contribution-substream">Section Contribution Substream</a></li>
-            <li><a href="#section-map-substream">Section Map Substream</a></li>
-            <li><a href="#source-information-substream">Source Information Substream</a></li>
-            <li><a href="#type-server-map-substream">Type Server Map Substream</a></li>
-            <li><a href="#edit-and-continue-substream">Edit and Continue Substream</a></li>
-            <li><a href="#optional-debug-header-substream">Optional Debug Header Substream</a></li>
-        </ul>
-        <li><a href="#ipi-stream">IPI Stream</a></li>
-        <li><a href="#module-symbol-streams">Module Symbol Streams</a></li>
-        <ul>
-            <li><a href="#symbol-information">Symbol Information</a></li>
-            <li><a href="#line-information">Line Information</a></li>
-            <li><a href="#global-references">Global References</a></li>
-        </ul>
-        <li><a href="#symbol-record-stream">Symbol Record Stream</a></li>
-        <li><a href="#global-symbol-index-stream-gsi">Global Symbol Index Stream (GSI)</a></li>
-        <li><a href="#public-symbol-index-stream">Public Symbol Index Stream</a></li>
-        <li><a href="#named-streams">Named streams</a></li>
-        <ul>
-            <li><a href="#linkinfo">/LinkInfo</a></li>
-            <li><a href="#srcheaderblock">/src/headerblock</a></li>
-            <li><a href="#tmcache">/TMCache</a></li>
-        </ul>
-        <li><a href="#codeview">CodeView</a></li>
-        <ul>
-            <li><a href="#codeview-format-overview">CodeView Format Overview</a></li>
-            <ul>
-                <li><a href="#type-indices">Type Indices</a></li>
-                <li><a href="#numeric-leaves">Numeric leaves</a></li>
-                <li><a href="#symbol-records">Symbol Records</a></li>
-                <li><a href="#new-codeview-symbols">New CodeView Symbols</a></li>
-                <li><a href="#old-codeview-symbols">Old CodeView Symbols</a></li>
-            </ul>
-            <li><a href="#codeview-uses">CodeView Uses</a></li>
-            </ul>
-                <li><a href="#object-files-obj">Object files (.obj)</a></li>
-                <li><a href="#type-server-pdb">Type Server PDB</a></li>
-                <li><a href="#debugfull-pdb">/DEBUG:FULL PDB</a></li>
-                <li><a href="#debugfastlink-pdb">/DEBUG:FASTLINK PDB</a></li>
-            </ul>
-        </ul>
-    </ul>
-</ul>
+<dl>
+    <dt><a href="#finding-the-pdb">Finding the PDB</a></dt>
+    <dt><a href="#multistream-file-msf">Multistream File (MSF)</a></dt>
+    <dd>
+        <dl>
+            <dt><a href="#msf-file-header">MSF file header</a></dt>
+            <dt><a href="#stream-table-stream">Stream Table Stream</a></dt>
+            <dt><a href="#old-stream-table-stream">Old Stream Table Stream</a></dt>
+        </dl>
+    </dd>
+    <dt><a href="#pdb-format">PDB-Format</a></dt>
+    <dd>
+        <dl>
+            <dt><a href="#overview">Overview</a></dt>
+            <dt><a href="#pdb-information-stream">PDB Information stream</a></dt>
+            <dt><a href="#names-stream">/names Stream</a></dt>
+            <dt><a href="#tpi-stream">TPI Stream</a></dt>
+            <dt><a href="#dbi-stream">DBI Stream</a></dt>
+            <dd>
+                <dl>
+                    <dt><a href="#module-information-substream">Module Information Substream</a></dt>
+                    <dt><a href="#section-contribution-substream">Section Contribution Substream</a></dt>
+                    <dt><a href="#section-map-substream">Section Map Substream</a></dt>
+                    <dt><a href="#source-information-substream">Source Information Substream</a></dt>
+                    <dt><a href="#type-server-map-substream">Type Server Map Substream</a></dt>
+                    <dt><a href="#edit-and-continue-substream">Edit and Continue Substream</a></dt>
+                    <dt><a href="#optional-debug-header-substream">Optional Debug Header Substream</a></dt>
+                </dl>
+            </dd>
+            <dt><a href="#ipi-stream">IPI Stream</a></dt>
+            <dt><a href="#module-symbol-streams">Module Symbol Streams</a></dt>
+            <dd>
+                <dl>
+                    <dt><a href="#symbol-information">Symbol Information</a></dt>
+                    <dt><a href="#line-information">Line Information</a></dt>
+                    <dt><a href="#global-references">Global References</a></dt>
+                </dl>
+            </dd>
+            <dt><a href="#symbol-record-stream">Symbol Record Stream</a></dt>
+            <dt><a href="#global-symbol-index-stream-gsi">Global Symbol Index Stream (GSI)</a></dt>
+            <dt><a href="#public-symbol-index-stream">Public Symbol Index Stream</a></dt>
+            <dt><a href="#named-streams">Named streams</a></dt>
+            <dd>
+                <dl>
+                    <dt><a href="#linkinfo">/LinkInfo</a></dt>
+                    <dt><a href="#srcheaderblock">/src/headerblock</a></dt>
+                    <dt><a href="#tmcache">/TMCache</a></dt>
+                </dl>
+            </dd>
+            <dt><a href="#codeview">CodeView</a></dt>
+            <dd>
+                <dl>
+                    <dt><a href="#codeview-format-overview">CodeView Format Overview</a></dt>
+                    <dd>
+                        <dl>
+                            <dt><a href="#type-indices">Type Indices</a></dt>
+                            <dt><a href="#numeric-leaves">Numeric leaves</a></dt>
+                            <dt><a href="#symbol-records">Symbol Records</a></dt>
+                            <dt><a href="#new-codeview-symbols">New CodeView Symbols</a></dt>
+                            <dt><a href="#old-codeview-symbols">Old CodeView Symbols</a></dt>
+                        </dl>
+                    </dd>
+                    <dt><a href="#codeview-uses">CodeView Uses</a></dt>
+                </dl>
+            </dd>
+            <dt><a href="#object-files-obj">Object files (.obj)</a></dt>
+            <dt><a href="#type-server-pdb">Type Server PDB</a></dt>
+            <dt><a href="#debugfull-pdb">/DEBUG:FULL PDB</a></dt>
+            <dt><a href="#debugfastlink-pdb">/DEBUG:FASTLINK PDB</a></dt>
+        </dl>
+    </dd>
+</dl>
+
 </div>
 
 # Finding the PDB
