@@ -36,7 +36,7 @@ For "tested" (but overly strict) parsing code see `validate.c` and for tested wr
 
 # Table of Contents
 
-<div>
+<div id="TOC">
 
 <ul>
     <li><a href="#finding-the-pdb">Finding the PDB</a></li>
