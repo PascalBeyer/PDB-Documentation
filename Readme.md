@@ -465,11 +465,11 @@ After the _named stream table_ the rest of the pdb stream is used for a set of f
 | featNoTypeMerge    | "NOTM"   |
 | featMinimalDbgInfo | "MINI"   |
 
-If either `impvVC110` or `impvVC140` is present, the PDB has a valid IPI stream (see later).
+If either `impvVC110` or `impvVC140` is present, the PDB has a valid IPI stream (see [later](#ipi-stream)).
 `impvVC110` must be the last feature code. If `featNoTypeMerge` is present the PDB was produced with the 
-undocumented linker flag `/DEBUG:CTypes` if `featMinimalDbgInfo` is present, the PDB was produces with the 
+undocumented linker flag `/DEBUG:CTypes`. If `featMinimalDbgInfo` is present, the PDB was produces with the 
 `/DEBUG:FASTLINK` (or equivalently `/DEBUG:MINI`). 
-For more information on both of these flags see the CodeView section.
+For more information on both of these flags see the [CodeView section](#codeview).
 
 
 ## /names Stream
@@ -624,7 +624,7 @@ need a "FORWARD REF":
         Derivation list type 0x0000, VT shape type 0x0000
         Size = 8, class name = structure, UDT(0x00001003)
 ```
-For a more detailed description, see the _Type Index_ subsection of the CodeView section.
+For a more detailed description, see the [_Type Index_ subsection](#type-indices) of the CodeView section.
 
 * `stream_index_of_hash_stream`
 
@@ -795,7 +795,7 @@ The age of the DBI stream gets set to the age of the PDB whenever the DBI stream
 
 * `stream_index_of_the_global_symbol_index_stream`, `stream_index_of_the_public_symbol_index_stream`, `stream_index_of_the_global_symbol_index_stream`
 
-For these streams see later sections. These stream indices can technically be `-1` meaning they are not present, but they seem to be always present.
+For these streams see [later](#global-symbol-index-stream-gsi) [sections](#public-symbol-index-stream). These stream indices can technically be `-1` meaning they are not present, but they seem to be always present.
 
 * `toolchain_version`,
   `version_number_of_mspdb_dll_which_build_the_pdb`, `build_number_of_mspdb_dll_which_build_the_pdb`
@@ -872,7 +872,7 @@ Both of these were 32-bit pointers, which were written out for convenience. If t
 
 * `first_code_contribution`
 
-A copy of the first entry in the Section Contribution Substream (see below) for this module which has the 'IMAGE_SCN_CNT_CODE' characteristic set. 
+A copy of the first entry in the Section Contribution Substream (see [below](#section-contribution-substream)) for this module which has the 'IMAGE_SCN_CNT_CODE' characteristic set. 
 If this module does not contribute to the code of the executable this entry can be the _invalid section contribution_, which 
 has `section_id`, `size` and `module_index` of `-1` and everything else `0` (see below for the definition of `pdb_section_contribution`).
 
@@ -889,7 +889,7 @@ The `TSM_index` has to do with the disabled `PDB_TYPESERVER` capability. So it i
 
 The index of the stream which contains the actual private symbol information for the module (compilation unit).
 This index can be `(u16)-1` if no private symbol information for this module is present.
-For more information about this stream see the _Module Symbol Stream_ section.
+For more information about this stream see the [_Module Symbol Stream_](#module-symbol-streams) section.
 
 * `byte_size_of_*_information`
 
@@ -1201,7 +1201,7 @@ This stream is again, like the `OMAP`, related to binary patching and contains t
 The _IPI Stream_ contains id information. It has the exact same layout as the TPI stream, 
 but it differs in what CodeView records are contained within. While the TPI stream contains 
 type records like `LF_STRUCTURE`, the IPI stream contains "id" records `LF_FUNC_ID` or `LF_UDT_MOD_SRC_LINE`, 
-which tell you information about functions or user defined types. For more information see the CodeView section later on.
+which tell you information about functions or user defined types. For more information see the [CodeView section](#codeview) later on.
 
 ## Module Symbol Streams
 
@@ -1232,9 +1232,9 @@ struct codeview_symbol_header{ // Also see SYMTYPE in cvinfo.h
 The `length` field itself is not contained in the `length` of the record. 
 Each record should begin on a 4-byte boundary. The symbol kind is one of the [SYM_ENUM_e](https://github.com/microsoft/microsoft-pdb/blob/805655a28bd8198004be2ac27e6e0290121a5e89/include/cvinfo.h#L2735) 
 contained in `cvinfo.h`. 
-As described below, the global data symbols (`S_GDATA32` and `S_LDATA32`) are split between the symbol record stream (see below) and the module symbol streams.
-On the contrary the procedure records (`S_GPROC32` and `S_LPROC32`) are always contained in the module symbol stream.
-For more information see the CodeView section.
+As described [below](#debugfull-pdb), the global data symbols (`S_GDATA32` and `S_LDATA32`) are split between the symbol record stream (see [below](#symbol-record-stream)) and the module symbol streams.
+On the contrary the procedure records (`S_GPROC32` and `S_LPROC32`) are always contained in the [module symbol stream](#module-symbol-streams).
+For more information see the [CodeView section](#codeview).
 
 ### Line Information
 
@@ -1305,9 +1305,9 @@ MSVC only emits one `codeview_line_block_header` per subsection and emits one `D
 
 ### Global References
 
-The global references are an array of `u32`-offsets into the symbol record stream (see below),
+The global references are an array of `u32`-offsets into the [symbol record stream](#symbol-record-stream),
 one for each global symbol referenced by this module. In this way, the PDB _remembers_ how the 
-reference counts inside the global symbol index stream (see below) came to be. 
+reference counts inside the [global symbol index stream](#global-symbol-index-stream-gsi) came to be. 
 On a relink of a compilation unit, the reference counts of the global symbols referenced by the compilation unit are decremented.
 
 
@@ -1326,7 +1326,7 @@ All symbol records in the symbol record stream are produced by `link.exe`/`mspdb
 The code that produces the symbol records can be found [here](https://github.com/microsoft/microsoft-pdb/blob/0fe89a942f9a0f8e061213313e438884f4c9b876/PDB/dbi/mod.cpp#L2587).
 
 **WARNING:** Symbol records in the _Symbol Record Stream_ are **not** necessarily valid. 
-They should only be considered valid, if they are referenced by either the Global Symbol Index Stream (for non-`S_PUB32` symbols), or the Public Symbol Index Stream (for `S_PUB32` symbols).
+They should only be considered valid, if they are referenced by either the [Global Symbol Index Stream](#global-symbol-index-stream-gsi) (for non-`S_PUB32` symbols), or the [Public Symbol Index Stream](#public-symbol-index-stream) (for `S_PUB32` symbols).
 Furthermore, some symbol records emit by The liker have invalid Section ids. Namely special symbols like `__ImageBase` and load configuration members like `__guard_longjmp_table`.
 
 The symbol record stream contains one `S_PROCREF` or `S_LPROCEREF` for every procedure, a `S_GDATA32` or `S_LDATA32` 
@@ -1446,7 +1446,7 @@ for(u32 table_index = 0, offsets_index = 0; table_index < gsi_hash_table_size; t
     }
 }
 ```
-The hash function used for the hash table is the common `pdb_hash_index` function (also see the _PDB Information Stream_ section),
+The hash function used for the hash table is the common `pdb_hash_index` function (also see the [_PDB Information Stream_](#pdb-information-stream) section,
 i.e. the index for a string is calculated using
 ```c
 // For reference see `GSI1::hashSz` in `microsoft-pdb/PDB/dbi/gsi.cpp`
@@ -1531,7 +1531,7 @@ struct public_symbol_index_stream_header{
 * `hash_table_information_byte_size`
 
 Immediately following the header, there is a variant of the global symbol index stream used to map symbol names to 
-`S_PUB32`-symbol records. 
+`S_PUB32`-symbol records. The hash function is the same as for the global symbol index stream.
 As it is not allowed for two exported symbols to have the same name, this table only holds one 
 record for any given name.
 
@@ -1857,8 +1857,8 @@ typedef struct lfMember {
 } lfMember;
 ```
 Definition taken from [here](https://github.com/microsoft/microsoft-pdb/blob/805655a28bd8198004be2ac27e6e0290121a5e89/include/cvinfo.h#L2580C1-L2587C1).
-Each of these members is aligned on a 4-byte boundary. The "variable length offset" is a numeric leaf (see below). 
-The "length prefixed string" is just a zero-terminated string. The comment probably dates back to when pascal strings were used (see "Old CodeView Symbols" section).
+Each of these members is aligned on a 4-byte boundary. The "variable length offset" is a numeric leaf (see [below](#numeric-leaves)). 
+The "length prefixed string" is just a zero-terminated string. The comment probably dates back to when pascal strings were used (see "[Old CodeView Symbols](#old-codeview-symbols)" section).
 
 As there can be an arbitrary amount of members inside of the `LF_FIELDLIST`, the size needed could exceed the bounds of the `u16` `length` field.
 For this case there exists the `LF_INDEX` type record:
@@ -2025,7 +2025,7 @@ struct lfClass2 {
                                     // name and mangled name
 };
 ```
-Here the `data`, contains two _numeric leaves_ (see above) which specify the count, i.e. 
+Here the `data`, contains two _numeric leaves_ (see [above](#numeric-leaves)) which specify the count, i.e. 
 the amount of member of the structure/class/interface and the length, i.e. the size in bytes.
 The are followed by two zero-terminated strings.
 
@@ -2190,7 +2190,7 @@ There are two specially designed relocation types for debug information, namely 
 #### `LF_TYPESERVER2`
 
 When using the [`/Zi` compiler option](https://learn.microsoft.com/en-us/cpp/build/reference/z7-zi-zi-debug-information-format?view=msvc-170#zi) MSVC will split the `.debug$T` section into a PDB.
-This PDB, usually named `vc140.pdb` is a _Type Server PDB_ (see below). In this case the only entry inside the 
+This PDB, usually named `vc140.pdb` is a _Type Server PDB_ (see [below](#type-server-pdb)). In this case the only entry inside the 
 `.debug$T` section is an `LF_TYPESERVER2` entry:
 ```c
 typedef struct lfTypeServer2 {
@@ -2252,7 +2252,7 @@ As [discussed above](#symbol-records), symbol records in the subsection are subj
 Each block in the hierarchy has a `pParent` and a `pEnd` member which are offsets inside the `symbol_information`.
 These entries are not filled out in the object file, hence the linker needs to track the level and fill in these members.
 
-Going through the list of symbols usually present inside the `.debug$S` section (see above):
+Going through the list of symbols usually present inside the `.debug$S` section (see [above](#object-files-obj)):
 
 * `S_{G/L}PROC32_ID`   
 These records are converted to `S_{G/L}PROC32` by changing the `typind` field from referencing the `LF_PROC_ID` for the function to referencing its type type instead.
