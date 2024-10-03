@@ -1025,9 +1025,9 @@ void pdb_validate(u8 *pdb_base, size_t pdb_file_size, int dump){
     
     struct msf_stream names_stream = {0};
     
-    int has_conflict_types = 0;
-    int is_fastlink_pdb    = 0;
-    int has_ipi_stream     = 0;
+    int is_lazy_pdb     = 0;
+    int is_fastlink_pdb = 0;
+    int has_ipi_stream  = 0;
     
     {
         //
@@ -1212,13 +1212,12 @@ void pdb_validate(u8 *pdb_base, size_t pdb_file_size, int dump){
                     
                     has_ipi_stream = 1;
                 }break;
-                case 'MTON':{ // NOTM
+                case 'NOTM':{ // /DEBUG:LAZY
                     if(dump) print("    NOTM (0x%x)\n", feature_code);
                     
-                    // record Conflict types (/DEBUG:CTYPES)
-                    has_conflict_types = 1;
+                    is_lazy_pdb = 1;
                 }break;
-                case 'INIM':{ // MINI
+                case 'MINI':{ // MINI
                     if(dump) print("    MINI (0x%x)\n", feature_code);
                     
                     // Minimal Debug Info (/DEBUG:FASTLINK)
@@ -1348,7 +1347,7 @@ void pdb_validate(u8 *pdb_base, size_t pdb_file_size, int dump){
             error("Error: The %s stream size does not match the one specified in its header.", tpi_or_ipi);
         }
         
-        if(index_stream_header.minimal_type_index >= index_stream_header.one_past_last_type_index){
+        if(index_stream_header.minimal_type_index > index_stream_header.one_past_last_type_index){
             error("Error: The last type index (0x%x) is inside the %s stream exceeds the minimal type index (0x%x).", index_stream_header.one_past_last_type_index, tpi_or_ipi, index_stream_header.minimal_type_index);
         }
         
@@ -2236,6 +2235,7 @@ void pdb_validate(u8 *pdb_base, size_t pdb_file_size, int dump){
             u16 was_linked_incrementally    : 1;
             u16 private_data_is_stripped    : 1;
             u16 the_pdb_uses_conflict_types : 1; // undocumented /DEBUG:CTYPES flag.
+            u16 unused : 13;
         } flags;
         
         u16 machine_type; // (0x8664)
@@ -2278,6 +2278,10 @@ void pdb_validate(u8 *pdb_base, size_t pdb_file_size, int dump){
     
     if(!dbi_stream_header.toolchain_version.is_new_version_format){
         error("Internal Error: DBI stream toolchain version does not have the 'is_new_version_format' bit set, this is not supported.");
+    }
+    
+    if(dbi_stream_header.flags.unused){
+        print("Warning: The 'unused' portion of the 'flags' inside the DBI stream header is set (0x%x)\n", dbi_stream_header.flags.unused);
     }
     
     if(msf_stream_by_index(&streams, &public_symbol_index_stream, dbi_stream_header.stream_index_of_the_public_symbol_index_stream)){

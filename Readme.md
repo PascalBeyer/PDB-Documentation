@@ -23,12 +23,12 @@ Armed with these sources, the plan for this repository is to provide technical d
 a toy-linker (`linker.c`) with PDB support (`pdb_writer.c`) to hopefully provide a complete picture of the PDB format.
 The validation utility tries to check as much about the PDB format as possible and has a `-dump` option. The toy-linker tries to work similar to:
 ```
-link.exe /NODEFAULTLIB /ENTRY:_start /SUBSYSTEM:console /DYNAMICBASE:no /DEBUG:FULL,CTYPES <.obj-files> <.lib-files> /OUT:a.exe /PDB:a.pdb /PDBALTPATH:a.pdb
+link.exe /NODEFAULTLIB /ENTRY:_start /SUBSYSTEM:console /INCREMENTAL:no /DYNAMICBASE:no /DEBUG:ctypes <.obj-files> <.lib-files> /OUT:a.exe /PDB:a.pdb /PDBALTPATH:a.pdb
 ```
 for simple object files, compiled with for example using `cl.exe /c /GS- /Z7 <c-files>` and import libraries.
 To compile the validation utility use `cl.exe validate.c` and to compile the linker use `cl.exe linker.c`.
 
-Note that all information in this repository is from 01.10.2024 and is might change when Microsoft updates their tools.
+Note that all information in this repository is from 03.10.2024 and is might change when Microsoft updates their tools.
 For reference, the MSVC version I am using is 19.28.29336.
 
 Any sample code inside the `Readme.md` is only intended to clarify the layout and algorithms used.
@@ -78,7 +78,7 @@ For "tested" (but overly strict) parsing code see `validate.c` and for tested wr
         * [Object files (.obj)](#object-files-obj)  
         * [Type Server PDB](#type-server-pdb)  
         * [/DEBUG:FULL PDB](#debugfull-pdb)  
-        * [/DEBUG:FASTLINK PDB](#debugfastlink-pdb)  
+
 
 
 # Finding the PDB
@@ -128,7 +128,7 @@ All this information is also displayed by `dumpbin`.
 
 For most Microsoft executables the `szPdb` stored, is simply the name of the PDB, for example:
 ```
-C:\Windows\System32>dumpbin notepad.exe
+C:\Windows\System32>dumpbin /HEADERS notepad.exe
   <...>
 
   Debug Directories
@@ -306,18 +306,18 @@ The following is an overview over all _important_ streams.
 
 | stream name                | stream index                        | availability                                            | description | 
 |----------------------------|-------------------------------------|---------------------------------------------------------| -------------|
-| PDB Information Stream     | Fixed index 1                       | Always present                                          | Contains information about the PDB and the GUID and age. |
-| TPI Stream                 | Fixed index 2                       | Always present                                          | Contains CodeView Type Records. (This is the stream that contains the type information) | 
-| DBI Stream                 | Fixed index 3                       | Always present, can be empty for type servers           | Contains various information about the executable and how to relate address ranges to symbol information. | 
-| IPI Stream                 | Fixed index 4                       | Present based on PDB Information stream                 | Contains CodeView Id Records. | 
+| [PDB Information Stream](#pdb-information-stream)     | Fixed index 1                       | Always present                                          | Contains information about the PDB and the GUID and age. |
+| [TPI Stream](#tpi-stream)                 | Fixed index 2                       | Always present                                          | Contains CodeView Type Records. (This is the stream that contains the type information) | 
+| [DBI Stream](#dbi-stream)                 | Fixed index 3                       | Always present, can be empty for type servers           | Contains various information about the executable and how to relate address ranges to symbol information. | 
+| [IPI Stream](#ipi-stream)                 | Fixed index 4                       | Present based on PDB Information stream                 | Contains CodeView Id Records. | 
 | TPI hash stream            | Defined by TPI header               | Present based on TPI header                             | Contains hashes for all type records, as well as speed up structures to lookup type records by type index and vice versa. |
 | IPI hash stream            | Defined by IPI header               | Present based on IPI header                             | Contains hashes for all ID records, as well as speed up structures to lookup ID records by id index and vice versa. |
-| Module symbol stream       | Defined in DBI stream               | Usually one for each module                             | Contains symbol and line information for the module (compilation unit). |
-| Symbol record stream       | Defined by DBI stream header        | Present based on DBI header                             | Contains references to all global symbols defined in the individual modules, as well as "public symbols". | 
-| Global symbol index stream | Defined by the DBI header           | Present based on DBI header                             | Contains a speedup structure to lookup symbols in the symbol record stream by name. Only global symbols "hit" by the global symbol stream are valid. | 
-| Public symbol index stream | Defined by the DBI header           | Present based on DBI header                             | Contains a speedup structure to lookup public symbols by name or address. Also contains information about the incremental linking table inside the exe. | 
-| /names                     | Defined in the _named stream table_ | Technically optional, but required for line information | A global string table. This allows for specifying strings by index instead of redundantly storing them everywhere. | 
-| Section Header Dump Stream | Defined in DBI stream               | Technically optional, but always observed               | Contains a copy of the section headers of the executable. This is used to resolve section:offset addresses to relative virtual addresses. |
+| [Module symbol stream](#module-symbol-streams)       | Defined in DBI stream               | Usually one for each module                             | Contains symbol and line information for the module (compilation unit). |
+| [Symbol record stream](#symbol-record-stream)       | Defined by DBI stream header        | Present based on DBI header                             | Contains references to all global symbols defined in the individual modules, as well as "public symbols". | 
+| [Global symbol index stream](#global-symbol-index-stream-gsi) | Defined by the DBI header           | Present based on DBI header                             | Contains a speedup structure to lookup symbols in the symbol record stream by name. Only global symbols "hit" by the global symbol stream are valid. | 
+| [Public symbol index stream](#public-symbol-index-stream) | Defined by the DBI header           | Present based on DBI header                             | Contains a speedup structure to lookup public symbols by name or address. Also contains information about the incremental linking table inside the exe. | 
+| [/names](#names-stream)                     | Defined in the _named stream table_ | Technically optional, but required for line information | A global string table. This allows for specifying strings by index instead of redundantly storing them everywhere. | 
+| [Section Header Dump Stream](#optional-debug-header-substream) | Defined in DBI stream               | Technically optional, but always observed               | Contains a copy of the section headers of the executable. This is used to resolve section:offset addresses to relative virtual addresses. |
 
 ## PDB Information stream
 
@@ -352,6 +352,8 @@ Known named streams are
 | "/src/headerblock"  | Contains information about .natvis files contained in the PDB.  These files are also named streams. | 
 | "/TMCache"          | A relatively new stream, which contains a cache for the type maps defined in [tm.h](https://github.com/microsoft/microsoft-pdb/blob/master/PDB/dbi/tm.h) |
 | "/UDTSRCLINEUNDONE" | This stream is sometimes present but its meaning is unknown and it seems to be empty. | 
+
+For a description of some of these stream see the [Named Streams](#named-streams) section.
 
 The layout of this serialized hash table is as follows:
 ```c
@@ -467,10 +469,8 @@ After the _named stream table_ the rest of the pdb stream is used for a set of f
 
 If either `impvVC110` or `impvVC140` is present, the PDB has a valid IPI stream (see [later](#ipi-stream)).
 `impvVC110` must be the last feature code. If `featNoTypeMerge` is present the PDB was produced with the 
-undocumented linker flag `/DEBUG:CTypes`. If `featMinimalDbgInfo` is present, the PDB was produces with the 
+undocumented linker flag `/DEBUG:LAZY`. If `featMinimalDbgInfo` is present, the PDB was produces with the 
 `/DEBUG:FASTLINK` (or equivalently `/DEBUG:MINI`). 
-For more information on both of these flags see the [CodeView section](#codeview).
-
 
 ## /names Stream
 
@@ -2263,7 +2263,7 @@ Then the record and all subsequent function specific records such as `S_LOCAL` a
 These external data declarations are copied/deduplicated into the Symbol Record Stream and added to the Global Symbol Index hash table.
 If the record is added, it is added to the start of its bucket, meaning when looking up a global declaration we always find the newest `S_GDATA32` symbol first.
 
-* `S_LDATA32`
+* `S_LDATA32`   
 At global scope, these static data declarations are handled the in a similar way to their external counter-parts.
 The difference being, that static data declarations are added to the end of its bucket. This means you will always find external data declaration before any static data declarations for a given name.
 At local scope (if the level in the block hierarchy is non-zero), they are simply copied into the module symbol stream.
@@ -2302,5 +2302,3 @@ If the executable was incrementally linked, the thunk map is also added to the P
 * **The `* Linker *` Module**  
 The `* Linker *` module is a special module that contains debug information generated by the linker, such as `S_ENVBLOCK`, `S_SECTION` and `S_COFFGROUP`.
 
-### /DEBUG:FASTLINK PDB
-TODO

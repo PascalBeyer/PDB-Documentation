@@ -1932,7 +1932,7 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
         
         dbi_stream_header->stream_index_of_the_global_symbol_index_stream = PDB_STREAM_global_symbol_index;
         dbi_stream_header->stream_index_of_the_public_symbol_index_stream = PDB_STREAM_public_symbol_index;
-        dbi_stream_header->stream_index_of_the_symbol_record_stream = PDB_STREAM_symbol_record;
+        dbi_stream_header->stream_index_of_the_symbol_record_stream       = PDB_STREAM_symbol_record;
         
         // @cleanup: check these?
         dbi_stream_header->toolchain_version.is_new_version_format = 1;
@@ -1942,7 +1942,7 @@ void write_pdb(struct write_pdb_information *write_pdb_information){
         dbi_stream_header->build_number_of_mspdb_dll_which_build_the_pdb   = 0;
         
         // @note: I think the simplyfied way we handle `S_UDT` is more inline to the
-        //        `/DEBUG:CTypes` case.
+        //        `/DEBUG:CTypes` case. But it seems this flag is not set when linking with `/DEBUG:Ctypes`.... We keep it anyway.
         dbi_stream_header->flags.the_pdb_allows_conflicting_types = 1;
         
         dbi_stream_header->machine_type = /*CV_CFL_AMD64*/0xd0;
