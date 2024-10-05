@@ -1723,9 +1723,10 @@ int main(int argc, char *argv[]){
                     // 
                     // Calculate the relative virtual address of the import address table entry.
                     // 
-                    
+                    symbol_image_section_index      = image_rdata_section_header - image_sections;
                     symbol_relative_virtual_address = found->dll->import_address_table_relative_virtual_address + 8 * found->dllimport_index;
                 }else if(found->is_dllimport_thunk){
+                    symbol_image_section_index      = image_text_section_header - image_sections;
                     symbol_relative_virtual_address = image_text_section_header->virtual_address + dllimport_thunk_base + 6 * found->dllimport_thunk_index;
                 }else if(found->is_ImageBase){
                     symbol_relative_virtual_address = 0;
@@ -1923,8 +1924,9 @@ int main(int argc, char *argv[]){
         public_symbol->name[symbol->name.size] = 0;
         
         u8 *padding = (u8 *)public_symbol->name + symbol->name.size + 1;
-        for(u32 index = symbol->name.size + 1; index < size_to_allocate; index++){
-            padding[index] = 0xf0 + (size_to_allocate - index);
+        u32 padding_offset = offset_in_type(struct codeview_public_symbol, name) + symbol->name.size + 1;
+        for(u32 index = padding_offset; index < size_to_allocate; index++){
+            padding[index - padding_offset] = 0xf0 + (size_to_allocate - index);
         }
     }
     
