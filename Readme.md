@@ -12,7 +12,7 @@ The best sources of documentation are
      and contains some minor mistakes.
    * Random implementations like [pdb_raw](https://github.com/MolecularMatters/raw_pdb), 
      [dump_syms](https://github.com/mozilla/dump_syms/tree/main/src/windows),
-     [willglynn/pdb](https://github.com/willglynn/pdb) or the [raddebugger](https://github.com/EpicGamesExt/raddebugger/).
+     [willglynn/pdb](https://github.com/willglynn/pdb), [getsentry/pdb](https://github.com/getsentry/pdb) or the [raddebugger](https://github.com/EpicGamesExt/raddebugger/).
      
 Microsoft also published the [DIA SDK](https://learn.microsoft.com/en-us/visualstudio/debugger/debug-interface-access/debug-interface-access-sdk?view=vs-2022)
 or Debug Interface Access SDK, which is for example used by [x64dbg](https://github.com/x64dbg/x64dbg).
